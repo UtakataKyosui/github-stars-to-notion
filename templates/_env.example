@@ -1,0 +1,4 @@
+# Example only. This CLI does not load .env files automatically.
+GITHUB_STAR_USER={{user}}
+NOTION_DATA_SOURCE_ID={{dataSourceId}}
+# Supply GITHUB_TOKEN and NOTION_TOKEN through your shell or secret manager.

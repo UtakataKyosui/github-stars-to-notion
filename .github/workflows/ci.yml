@@ -28,3 +28,7 @@ jobs:
         run: npm test
       - name: Check CLI entry point
         run: node src/cli.ts --help
+      - name: Build distributable package and agent skills
+        run: npm run build
+      - name: Check packaged CLI from a separate directory
+        run: npm run test:build

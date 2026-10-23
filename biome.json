@@ -9,6 +9,7 @@
     "includes": [
       "src/**",
       "test/**",
+      "scripts/**",
       "*.json",
       ".fallowrc.json",
       "!package-lock.json"

@@ -4,7 +4,7 @@ GitHubでStarをつけたリポジトリを、GitHub Actionsから定期的にNo
 
 ## 現在の状態
 
-MVPの同期スクリプト、定期・手動実行のGitHub Actions、GitHub Topics・手入力タグによる分類、Cloudflare Workers AIによる日本語概要生成、自動テストを実装しています。
+MVPの同期スクリプト、定期・手動実行のGitHub Actions、GitHub Topics・手入力タグによる分類、Cloudflare Workers AIによる日本語概要生成、Crustによる対話セットアップ・配布用ビルド、自動テストを実装しています。
 利用には、NotionのデータベースとGitHub Actionsの設定が必要です。
 AI概要生成は任意です。Cloudflare設定がなければ基本同期のみ実行します。
 
@@ -196,6 +196,8 @@ npm ci --ignore-scripts --include=dev
 npm run check
 npm test
 npm run sync -- --help
+npm run build
+npm run test:build
 ```
 
 `npm run check`はBiomeによる整形・lint・import順序、TypeScriptの型、fallowによる未使用コード・依存を検査します。CIでも同じコマンドを実行します。個別には`npm run lint`、`npm run check:types`、`npm run check:unused`を使えます。`npm run format`は整形・安全なlint修正・import整理を適用するため、変更差分を確認してください。
@@ -204,7 +206,7 @@ Biomeとfallowは開発依存としてバージョンを固定しています。
 
 CLIは`@crustjs/core` / `@crustjs/extensions` 0.5.6、公式Effectアダプター`@crustjs/effect` 0.2.3、Effect 4.0.6を採用しています。各パッケージのNode.js 24対応と、アダプターのEffect v4 peer dependencyに合わせた構成です。
 
-アプリケーションコード（`src/*.ts`）はTypeScriptです。Node.js 24の[type stripping](https://nodejs.org/docs/latest-v24.x/api/typescript.html)で直接実行するため、ビルドやBunは不要です。`npm run check`でTypeScript 7のstrictモードによる型検査を行います。`erasableSyntaxOnly`を有効にし、Node.jsで直接実行できる構文に制限しています。設定・統計・APIクライアント・外部APIのデータ構造・テスト用の依存注入にも型を定義しています。外部レスポンスの実行時検証は引き続き行い、回帰テスト（`test/*.mjs`）からTypeScriptモジュールを直接検証します。
+アプリケーションコード（`src/*.ts`）はTypeScriptです。Node.js 24の[type stripping](https://nodejs.org/docs/latest-v24.x/api/typescript.html)で直接実行でき、既存の同期・ヘルプ・単体テストにはビルドやBunは不要です。`npm run check`でTypeScript 7のstrictモードによる型検査を行います。`erasableSyntaxOnly`を有効にし、Node.jsで直接実行できる構文に制限しています。設定・統計・APIクライアント・外部APIのデータ構造・テスト用の依存注入にも型を定義しています。外部レスポンスの実行時検証は引き続き行い、回帰テスト（`test/*.mjs`）からTypeScriptモジュールを直接検証します。
 
 Crustが引数解析とヘルプを担当し、`handler()`でEffectプログラムを実行します。Effectは設定読み込み・同期呼び出しの失敗を処理し、件数レポートとActionsサマリー追記を順に実行します。同期・AIモジュールは既存のPromise APIを維持します。`--help`は設定なしで利用でき、同期もサマリー追記も行いません。不明な引数・フラグは同期前に拒否します。
 
@@ -217,6 +219,38 @@ Ctrl+Cで中断すると終了コード130になり、実行中のHTTP通信と�
 AIを利用する場合は上記の`CLOUDFLARE_ACCOUNT_ID`、`CLOUDFLARE_API_TOKEN`と任意のモデル・件数・force設定も渡します。
 `.env`は自動読み込みしません。トークンをコマンド履歴に残さないでください。
 ローカル実行時は、同じ同期先へのActionsや他プロセスの同期を停止してください。
+
+### Crustの初期設定・ビルド・スキル
+
+任意のローカル設定を作成するには、先にビルドしてテンプレートを配置します。対話実行ではGitHubユーザーとNotionデータソースIDを入力します。初期設定だけでは同期は開始しません。
+
+```sh
+npm run build
+npm run start -- init
+# 対話なしで作成する場合
+npm run start -- init --non-interactive --user YOUR_USER --data-source-id YOUR_DATA_SOURCE_ID
+```
+
+カレントディレクトリの`.stars-to-notion/`へ、`config.json`、`.env.example`、説明を作成します。既存の非空ディレクトリには上書きしません。保存する設定は`GITHUB_STAR_USER`と`NOTION_DATA_SOURCE_ID`の2つだけで、トークンは環境変数から渡します。`.env.example`は参照用で、自動読み込みしません。`.stars-to-notion/`はgitの対象外です。
+
+同期時のユーザー選択は`GITHUB_STAR_USER` → `GITHUB_REPOSITORY_OWNER` → ローカル設定の順、データソースIDは`NOTION_DATA_SOURCE_ID` → ローカル設定の順です。空白のみの値は未設定として扱います。ローカル設定ファイルが壊れている場合は同期前に停止します。設定ディレクトリを含むプロジェクトのルートから実行してください。
+
+`@crustjs/env`のContextで環境変数を宣言し、ヘルプにも一覧を表示します。値の検証は既存の設定検証を維持し、秘密情報をエラーへ出しません。`@crustjs/store`で設定を保存し、`@crustjs/create`でテンプレートを展開、`@crustjs/prompts`で入力します。通常の端末では`@crustjs/progress`のスピナーをstderrへ表示します。パイプ・Actionsではスピナーを表示せず、従来の件数レポートを出力します。
+
+`npm run build`は`@crustjs/crust`によりNode.js向けJavaScriptパッケージを`.crust/root/`へ生成します。ビルドにはBunのバンドラーを使います。PATHにBunがあればその実体を使い、なければCrust配布バイナリ内蔵のBunを使います。Bunを別途使う場合はCrustが要求するバージョンを用意してください。配布物の実行にはNode.js 24以降のみが必要です。ビルド時にテンプレートと`@crustjs/skills`で生成したCLI操作用スキルも同梱します。
+
+```sh
+npm run start -- --help
+npm run test:build
+# 同梱スキルをプロジェクトへ導入する場合（利用者が明示的に実行）
+npm run start -- skills install --all --scope project
+```
+
+スキルの自動修復は無効です。通常の同期やヘルプ表示ではエージェントの設定を書き換えません。ソースからの`npm run sync -- init`もビルド済みテンプレートを使います。ビルド成果物はgitの対象外で、npmへの公開は行いません。
+
+追加テストは`@crustjs/testing`の`captureExecute()`と`runInteractive()`、Coreの`run()`を使い、対話入力、設定の優先順位、上書き拒否、秘密情報の非混入、スピナー終了処理を検証します。`npm run test:build`は別の一時ディレクトリから配布物を起動し、テンプレートと生成スキルも検証します。CIでもビルドと配布物のチェックを実行します。
+
+実装の基準はCrust公式の[Testing](https://crustjs.com/docs/guide/testing/)、[Build and distribution](https://crustjs.com/docs/guide/build-and-distribution/)、[Skills](https://crustjs.com/docs/modules/skills/)、[Env](https://crustjs.com/docs/modules/env/)、[Create](https://crustjs.com/docs/modules/create/)、[Progress](https://crustjs.com/docs/modules/progress/)、[Prompts](https://crustjs.com/docs/modules/prompts/)、[Store](https://crustjs.com/docs/modules/store/)です。
 
 ## ロードマップ
 

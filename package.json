@@ -3,10 +3,23 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "github-stars-to-notion": "src/cli.ts"
+  },
+  "crust": {
+    "runtime": "node",
+    "artifact": "package",
+    "include": [
+      "templates"
+    ]
+  },
   "engines": {
     "node": ">=24"
   },
   "scripts": {
+    "build": "crust build",
+    "start": "node .crust/root/bin/github-stars-to-notion.js",
+    "test:build": "node scripts/verify-build.mjs",
     "sync": "node src/cli.ts",
     "test": "node --test",
     "check": "npm run lint && npm run check:types && npm run check:unused",
@@ -17,12 +30,20 @@
   },
   "dependencies": {
     "@crustjs/core": "0.5.6",
+    "@crustjs/create": "0.2.2",
     "@crustjs/effect": "0.2.3",
+    "@crustjs/env": "0.1.1",
     "@crustjs/extensions": "0.5.6",
+    "@crustjs/progress": "0.1.5",
+    "@crustjs/prompts": "0.2.6",
+    "@crustjs/skills": "0.5.6",
+    "@crustjs/store": "0.4.4",
     "effect": "4.0.6"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.2",
+    "@crustjs/crust": "0.5.6",
+    "@crustjs/testing": "0.1.6",
     "@types/node": "24.19.2",
     "fallow": "3.35.0",
     "typescript": "7.0.2"
