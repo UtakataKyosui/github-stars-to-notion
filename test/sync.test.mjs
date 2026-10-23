@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { ApiClient, ApiError, NOTION_VERSION, PROPERTY_TYPES, readConfig, sync, propertiesFor } from '../src/sync.mjs';
+import { ApiClient, ApiError, NOTION_VERSION, PROPERTY_TYPES, MANUAL_PROPERTY_TYPES, readConfig, sync, propertiesFor } from '../src/sync.mjs';
 import { main } from '../src/cli.mjs';
 
 const env = {
@@ -17,8 +17,25 @@ const json = (data, status = 200, headers = {}) => new Response(JSON.stringify(d
 const pageFor = row => ({ id: `page-${row.repo.id}`, properties: propertiesFor(String(row.repo.id), { repo: row.repo, starredAt: row.starred_at }) });
 
 // Exercise production HTTP adapters and synchronization together, with no network access.
-function fixture({ stars = [star(1)], pages = [], pageSize = 100, schema = PROPERTY_TYPES, intercept } = {}) {
+function fixture({ stars = [star(1)], pages = [], pageSize = 100, schema = { ...PROPERTY_TYPES, ...MANUAL_PROPERTY_TYPES }, topicOptions = [], intercept } = {}) {
   const state = { stars, pages: structuredClone(pages), calls: [], waits: [] };
+  state.schema = { properties: Object.fromEntries(Object.entries(schema).map(([name, type]) => [name, { type }])) };
+  if (state.schema.properties['GitHub Topics']) {
+    state.schema.properties['GitHub Topics'].multi_select = { options: structuredClone(topicOptions) };
+  }
+  const savedProperties = properties => {
+    const saved = structuredClone(properties);
+    const options = state.schema.properties['GitHub Topics'].multi_select.options;
+    saved['GitHub Topics'].multi_select = saved['GitHub Topics'].multi_select.map(({ name }) => {
+      let option = options.find(option => option.name === name);
+      if (!option) {
+        option = { id: `option-${options.length}`, name, color: 'default' };
+        options.push(option);
+      }
+      return structuredClone(option);
+    });
+    return saved;
+  };
   const fetchImpl = async (url, options) => {
     const parsed = new URL(url);
     const body = options.body ? JSON.parse(options.body) : undefined;
@@ -39,17 +56,17 @@ function fixture({ stars = [star(1)], pages = [], pageSize = 100, schema = PROPE
       return json({ results, has_more: offset + pageSize < selected.length, next_cursor: String(offset + pageSize) });
     }
     if (parsed.pathname.startsWith('/v1/data_sources/')) {
-      return json({ properties: Object.fromEntries(Object.entries(schema).map(([name, type]) => [name, { type }])) });
+      return json(state.schema);
     }
     if (parsed.pathname === '/v1/pages') {
-      const page = { id: `new-page-${state.pages.length}`, properties: body.properties };
+      const page = { id: `new-page-${state.pages.length}`, properties: savedProperties(body.properties) };
       state.pages.push(page);
       return json(page);
     }
     if (options.method === 'PATCH') {
       const page = state.pages.find(p => parsed.pathname === `/v1/pages/${p.id}`);
       assert.ok(page, 'page to update exists');
-      Object.assign(page.properties, body.properties);
+      Object.assign(page.properties, savedProperties(body.properties));
       return json(page);
     }
     throw new Error('Unexpected mock request');
@@ -72,6 +89,103 @@ test('initial sync creates rows; rerun skips without creating duplicates', async
   const github = f.calls.find(c => c.url.host === 'api.github.com');
   assert.equal(github.url.pathname, '/users/UtakataKyosui/starred');
   assert.equal(github.headers.Accept, 'application/vnd.github.star+json');
+});
+
+test('topics are normalized and deduplicated across repositories and reruns', async () => {
+  const f = fixture({ stars: [
+    star(1, { topics: [' JavaScript ', 'javascript', 'ＪａｖａＳｃｒｉｐｔ', '', '  ', 'node-js'] }),
+    star(2, { topics: ['node-js', 'JAVASCRIPT'] }),
+  ] });
+  assert.equal((await sync(config, f)).created, 2);
+  assert.deepEqual(f.pages[0].properties['GitHub Topics'].multi_select.map(x => x.name), ['javascript', 'node-js']);
+  assert.equal(f.schema.properties['GitHub Topics'].multi_select.options.length, 2);
+  assert.equal((await sync(config, f)).skipped, 2);
+  assert.equal(f.schema.properties['GitHub Topics'].multi_select.options.length, 2);
+  assert.equal(f.pages.length, 2);
+  assert.equal(f.writes().length, 2);
+});
+
+test('existing option spelling is reused and option order, IDs and colors do not trigger updates', async () => {
+  const old = pageFor(star(1, { topics: ['javascript', 'node-js'] }));
+  old.properties['GitHub Topics'].multi_select = [
+    { id: 'node', name: 'node-js', color: 'blue' },
+    { id: 'js', name: 'JavaScript', color: 'red' },
+  ];
+  const f = fixture({ pages: [old], stars: [star(1, { topics: ['JAVASCRIPT', 'node-js'] }), star(2, { topics: ['javascript'] })],
+    topicOptions: old.properties['GitHub Topics'].multi_select });
+  assert.deepEqual(await sync(config, f), { created: 1, updated: 0, skipped: 1, failed: 0 });
+  assert.equal(f.schema.properties['GitHub Topics'].multi_select.options.length, 2);
+  assert.equal(f.pages[1].properties['GitHub Topics'].multi_select[0].id, 'js');
+});
+
+test('topic additions, removals and clearing preserve manual Tags, Category and page body', async () => {
+  const old = pageFor(star(1, { topics: ['old-topic', 'retained'] }));
+  old.properties.Tags = { multi_select: [{ id: 'manual', name: 'Favorite', color: 'red' }] };
+  old.properties.Category = { select: { id: 'category', name: 'Development', color: 'blue' } };
+  old.children = [{ paragraph: 'manual notes' }];
+  const f = fixture({ pages: [old], stars: [star(1, { topics: ['new-topic', 'retained'] })] });
+  for (const topics of [['new-topic', 'retained'], []]) {
+    f.stars[0].repo.topics = topics;
+    assert.equal((await sync(config, f)).updated, 1);
+    assert.deepEqual(f.pages[0].properties['GitHub Topics'].multi_select.map(x => x.name), topics);
+    assert.deepEqual(f.pages[0].properties.Tags, old.properties.Tags);
+    assert.deepEqual(f.pages[0].properties.Category, old.properties.Category);
+    assert.deepEqual(f.pages[0].children, old.children);
+    assert.equal((await sync(config, f)).skipped, 1);
+  }
+  for (const call of f.writes()) {
+    assert.ok(!('Tags' in call.body.properties));
+    assert.ok(!('Category' in call.body.properties));
+  }
+});
+
+test('repositories with empty or omitted topics sync and old pages are backfilled in place', async () => {
+  const old = pageFor(star(1));
+  delete old.properties['GitHub Topics'];
+  const f = fixture({ stars: [star(1), star(2, { topics: [] })], pages: [old] });
+  assert.deepEqual(await sync(config, f), { created: 1, updated: 1, skipped: 0, failed: 0 });
+  assert.equal(f.pages[0].id, old.id);
+  for (const page of f.pages) assert.deepEqual(page.properties['GitHub Topics'], { multi_select: [] });
+  assert.equal((await sync(config, f)).skipped, 2);
+});
+
+test('topic name and selection limits accept boundaries after normalization and deduplication', async () => {
+  const topics = Array.from({ length: 99 }, (_, i) => `topic-${i}`);
+  topics.push('😀'.repeat(50));
+  const f = fixture({ stars: [star(1, { topics: [...topics, ...topics] })] });
+  assert.equal((await sync(config, f)).created, 1);
+  assert.equal(f.pages[0].properties['GitHub Topics'].multi_select.length, 100);
+});
+
+test('invalid topics fail before any writes, without silently dropping or truncating data', async t => {
+  for (const topics of [null, 'javascript', [123], ['a,b'], ['a\nb'], ['a'.repeat(101)],
+    ['😀'.repeat(51)], ['ａ，ｂ'], Array.from({ length: 101 }, (_, i) => `topic-${i}`)]) {
+    await t.test(JSON.stringify(topics).slice(0, 60), async () => {
+      const f = fixture({ stars: [star(1), star(2, { topics })] });
+      await assert.rejects(sync(config, f), /topic/);
+      assert.equal(f.writes().length, 0);
+    });
+  }
+});
+
+test('classification properties must exist with correct types before any write', async t => {
+  for (const name of ['GitHub Topics', 'Tags', 'Category']) {
+    for (const type of [undefined, 'rich_text']) {
+      await t.test(`${name}: ${type ?? 'missing'}`, async () => {
+        const schema = { ...PROPERTY_TYPES, ...MANUAL_PROPERTY_TYPES, [name]: type };
+        if (!type) delete schema[name];
+        const f = fixture({ schema });
+        await assert.rejects(sync(config, f), /Notion schema/);
+        assert.equal(f.writes().length, 0);
+      });
+    }
+  }
+});
+
+test('ambiguous normalized schema options stop before writes', async () => {
+  const f = fixture({ topicOptions: [{ name: 'JavaScript' }, { name: 'javascript' }] });
+  await assert.rejects(sync(config, f), /duplicate normalized option names/);
+  assert.equal(f.writes().length, 0);
 });
 
 test('rename, transfer, description and star date changes update the same page, preserving manual fields', async () => {
@@ -170,6 +284,30 @@ test('lost successful create response is reconciled without a second POST', asyn
   assert.equal((await sync(config, f)).created, 1);
   assert.equal(f.writes().length, 1);
   assert.equal(f.pages.length, 1);
+});
+
+test('ambiguous topic creates reconcile existing selections and preserve concurrent manual edits', async t => {
+  for (const topics of [['typescript', 'node-js'], ['stale-topic']]) {
+    await t.test(topics.join(', '), async () => {
+      const saved = pageFor(star(1, { topics }));
+      saved.properties['GitHub Topics'].multi_select.reverse();
+      saved.properties.Tags = { multi_select: [{ name: 'Keep This' }] };
+      saved.properties.Category = { select: { name: 'Tools' } };
+      const f = fixture({ stars: [star(1, { topics: ['typescript', 'node-js'] })], intercept(call, state) {
+        if (call.url.pathname === '/v1/pages') {
+          state.pages.push(structuredClone(saved));
+          throw new Error('Response lost after creation');
+        }
+      } });
+      assert.equal((await sync(config, f)).created, 1);
+      assert.equal(f.calls.filter(c => c.url.pathname === '/v1/pages').length, 1);
+      assert.equal(f.calls.filter(c => c.method === 'PATCH').length, topics.includes('stale-topic') ? 1 : 0);
+      assert.equal(f.pages.length, 1);
+      assert.deepEqual(f.pages[0].properties.Tags, saved.properties.Tags);
+      assert.deepEqual(f.pages[0].properties.Category, saved.properties.Category);
+      assert.deepEqual(f.pages[0].properties['GitHub Topics'].multi_select.map(x => x.name).sort(), ['node-js', 'typescript']);
+    });
+  }
 });
 
 test('ambiguous create with delayed visibility is checked again, never recreated', async () => {
