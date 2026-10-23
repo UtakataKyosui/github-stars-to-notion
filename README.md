@@ -20,7 +20,7 @@ AI概要生成は任意です。Cloudflare設定がなければ基本同期の�
 - 作成・更新・スキップ・失敗の件数をActionsの実行サマリーに表示する。
 
 同期方式はGitHubからNotionへの一方向とし、MVPでは公開リポジトリを対象にします。
-Node.js 24の標準機能のみを使用します。追加のnpmパッケージやインストール処理は不要です。
+Node.js 24で実行します。CLIにはCrust、実行制御には公式アダプター経由でEffect.tsを使用します。GitHub Actionsはnpmキャッシュを利用し、同期前に`npm ci --ignore-scripts --include=dev`で依存をインストールして型チェックを行います。CIではテストとCLIのヘルプ表示も検証します。
 
 ## セットアップ
 
@@ -189,12 +189,26 @@ Actionsサマリーの`ai_generated`（保存成功）、`ai_skipped`（変更�
 
 ## ローカル開発
 
-Node.js 24を用意し、依存インストールなしで実行できます。
+Node.js 24を用意し、lockfileに固定した依存をインストールします。
 
 ```sh
+npm ci --ignore-scripts --include=dev
 npm run check
 npm test
+npm run sync -- --help
 ```
+
+`npm run check`はBiomeによる整形・lint・import順序、TypeScriptの型、fallowによる未使用コード・依存を検査します。CIでも同じコマンドを実行します。個別には`npm run lint`、`npm run check:types`、`npm run check:unused`を使えます。`npm run format`は整形・安全なlint修正・import整理を適用するため、変更差分を確認してください。
+
+Biomeとfallowは開発依存としてバージョンを固定しています。`biome.json`はソース・テスト・設定JSONを対象とし、生成されたlockfileは除外します。`.fallowrc.json`はCLIとテストをエントリーポイントに指定します。fallowは全体の未使用コード検査を失敗条件としており、既存の指摘を隠すベースラインは使用しません。定期・手動同期のWorkflowは同期前に`npm run check:types`を実行します。
+
+CLIは`@crustjs/core` / `@crustjs/extensions` 0.5.6、公式Effectアダプター`@crustjs/effect` 0.2.3、Effect 4.0.6を採用しています。各パッケージのNode.js 24対応と、アダプターのEffect v4 peer dependencyに合わせた構成です。
+
+アプリケーションコード（`src/*.ts`）はTypeScriptです。Node.js 24の[type stripping](https://nodejs.org/docs/latest-v24.x/api/typescript.html)で直接実行するため、ビルドやBunは不要です。`npm run check`でTypeScript 7のstrictモードによる型検査を行います。`erasableSyntaxOnly`を有効にし、Node.jsで直接実行できる構文に制限しています。設定・統計・APIクライアント・外部APIのデータ構造・テスト用の依存注入にも型を定義しています。外部レスポンスの実行時検証は引き続き行い、回帰テスト（`test/*.mjs`）からTypeScriptモジュールを直接検証します。
+
+Crustが引数解析とヘルプを担当し、`handler()`でEffectプログラムを実行します。Effectは設定読み込み・同期呼び出しの失敗を処理し、件数レポートとActionsサマリー追記を順に実行します。同期・AIモジュールは既存のPromise APIを維持します。`--help`は設定なしで利用でき、同期もサマリー追記も行いません。不明な引数・フラグは同期前に拒否します。
+
+Ctrl+Cで中断すると終了コード130になり、実行中のHTTP通信と待機をキャンセルして、次のリクエスト・再試行・AI生成・書き込みを開始しません。中断時点ですでにサーバーへ送信した書き込みやAI生成は取り消せない場合があります。Notionの作成処理中に中断した場合は、既存の重複防止・障害復旧の手順に従って結果を確認してから再実行してください。
 
 テストはAPIを模擬し、実際のGitHub/Notion/Cloudflareへ接続しません。基本同期に加え、AI概要の保存と再実行、入力・モデル・プロンプト変更、強制再生成、READMEなし・長大・不正指示、件数制限、AI無効・設定不備、401・429・タイムアウト・保存失敗からの復旧、手入力保持、Secretの非混入を検証します。
 
