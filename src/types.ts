@@ -82,17 +82,19 @@ export interface RequestOptions {
   body?: unknown;
   retrySafe?: boolean;
   readme?: boolean;
+  signal?: AbortSignal;
 }
 
 export interface ApiDependencies {
   fetchImpl?: typeof fetch;
-  sleep?: (milliseconds: number) => Promise<unknown>;
+  sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<unknown>;
   now?: () => number;
+  signal?: AbortSignal;
 }
 
 export interface ApiClientLike {
   request<T>(path: string, options?: RequestOptions): Promise<T>;
-  sleep(milliseconds: number): Promise<unknown>;
+  sleep(milliseconds: number, signal?: AbortSignal): Promise<unknown>;
 }
 
 export interface SummaryDependencies extends ApiDependencies {
@@ -109,4 +111,5 @@ export interface SyncDependencies {
   notion?: ApiClientLike;
   aiDeps?: ApiDependencies;
   stats?: SyncStats;
+  signal?: AbortSignal;
 }

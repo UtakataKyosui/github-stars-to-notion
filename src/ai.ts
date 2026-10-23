@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { setTimeout as delay } from 'node:timers/promises';
+import { wait } from './cancellation.ts';
 import type {
   AiConfig,
   AiSettings,
@@ -120,9 +120,10 @@ interface Completion {
 export async function generateSummary(
   config: AiConfig,
   input: string,
-  { fetchImpl = fetch, sleep = delay, now = Date.now }: ApiDependencies = {},
+  { fetchImpl = fetch, sleep, now = Date.now, signal }: ApiDependencies = {},
 ): Promise<string> {
   for (let attempt = 0; attempt < 3; attempt++) {
+    signal?.throwIfAborted();
     let response: Response;
     let data: Completion | undefined;
     try {
@@ -131,7 +132,9 @@ export async function generateSummary(
         {
           method: 'POST',
           redirect: 'error',
-          signal: AbortSignal.timeout(30_000),
+          signal: signal
+            ? AbortSignal.any([signal, AbortSignal.timeout(30_000)])
+            : AbortSignal.timeout(30_000),
           headers: {
             Authorization: `Bearer ${config.token}`,
             'Content-Type': 'application/json',
@@ -147,11 +150,13 @@ export async function generateSummary(
           }),
         },
       );
+      signal?.throwIfAborted();
       if (response.ok) data = (await response.json()) as Completion;
     } catch {
+      signal?.throwIfAborted();
       // Retrying inference after a lost response can incur another charge.
       if (attempt < 2) {
-        await sleep(1000 * 2 ** attempt);
+        await wait(1000 * 2 ** attempt, sleep, signal);
         continue;
       }
       throw new AiError(
@@ -159,17 +164,18 @@ export async function generateSummary(
         'network_or_json',
       );
     }
+    signal?.throwIfAborted();
     if (!response.ok) {
       if ((response.status === 429 || response.status >= 500) && attempt < 2) {
         const retryAfter = response.headers.get('retry-after');
-        const wait =
+        const retryWait =
           retryAfter === null
             ? 1000 * 2 ** attempt
             : /^\d+$/.test(retryAfter)
               ? Number(retryAfter) * 1000
               : Date.parse(retryAfter) - now();
-        if (Number.isFinite(wait) && wait <= 30_000) {
-          await sleep(Math.max(wait, 1000 * 2 ** attempt));
+        if (Number.isFinite(retryWait) && retryWait <= 30_000) {
+          await wait(Math.max(retryWait, 1000 * 2 ** attempt), sleep, signal);
           continue;
         }
       }
@@ -221,8 +227,10 @@ export async function syncSummaries(
     fetchImpl,
     sleep,
     now = Date.now,
+    signal,
   }: SummaryDependencies,
 ): Promise<void> {
+  signal?.throwIfAborted();
   const stats = Object.assign(baseStats, {
     ai_generated: 0,
     ai_skipped: 0,
@@ -241,6 +249,7 @@ export async function syncSummaries(
   }
   let attempted = 0;
   for (const [id, { repo }] of stars) {
+    signal?.throwIfAborted();
     let stage = 'readme';
     try {
       // Even cached summaries need a bounded README read to detect changed input.
@@ -254,8 +263,9 @@ export async function syncSummaries(
         throw new AiError('Invalid repository name');
       const readme = await github.request<string>(
         `/repos/${parts.map(encodeURIComponent).join('/')}/readme`,
-        { readme: true },
+        { readme: true, signal },
       );
+      signal?.throwIfAborted();
       const input = summaryInput(repo, readme);
       const hash = createHash('sha256').update(input).digest('hex');
       const page = existing.get(id);
@@ -283,11 +293,14 @@ export async function syncSummaries(
         fetchImpl,
         sleep,
         now,
+        signal,
       });
+      signal?.throwIfAborted();
       // Save text and its provenance together, only after successful generation.
       stage = 'save';
       await notion.request(`/pages/${encodeURIComponent(page.id)}`, {
         method: 'PATCH',
+        signal,
         body: {
           properties: {
             'AI Summary': richText(summary),
@@ -300,8 +313,10 @@ export async function syncSummaries(
           },
         },
       });
+      signal?.throwIfAborted();
       stats.ai_generated++;
     } catch (error) {
+      signal?.throwIfAborted();
       // Keep previous text/hash intact so failures remain eligible on the next run.
       // Never log upstream messages, bodies, repository text, or credentials.
       stats.ai_failed++;

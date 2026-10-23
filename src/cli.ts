@@ -10,7 +10,7 @@ import type { Environment, SyncConfig, SyncStats } from './types.ts';
 export interface CliDependencies {
   runSync?: (
     config: SyncConfig,
-    options: { stats: SyncStats },
+    options: { stats: SyncStats; signal: AbortSignal },
   ) => Promise<unknown>;
   write?: (text: string) => void;
   writeError?: (text: string) => void;
@@ -29,8 +29,8 @@ function syncProgram(
   return Effect.gen(function* () {
     const stats: SyncStats = { created: 0, updated: 0, skipped: 0, failed: 0 };
     const failure = yield* Effect.tryPromise({
-      try: async () => {
-        await runSync(readConfig(env), { stats });
+      try: async (signal) => {
+        await runSync(readConfig(env), { stats, signal });
       },
       catch: (error) =>
         error instanceof SyncError ? error.message : 'Unexpected sync failure',

@@ -1,5 +1,5 @@
-import { setTimeout as delay } from 'node:timers/promises';
 import { readAiConfig, syncSummaries } from './ai.ts';
+import { wait } from './cancellation.ts';
 import type {
   ApiClientLike,
   ApiDependencies,
@@ -84,19 +84,25 @@ export class ApiClient implements ApiClientLike {
   service: string;
   token: string;
   fetch: typeof fetch;
-  sleep: (milliseconds: number) => Promise<unknown>;
+  private sleepImpl: ApiDependencies['sleep'];
   now: () => number;
+  signal?: AbortSignal;
 
   constructor(
     service: string,
     token: string,
-    { fetchImpl = fetch, sleep = delay, now = Date.now }: ApiDependencies = {},
+    { fetchImpl = fetch, sleep, now = Date.now, signal }: ApiDependencies = {},
   ) {
     this.service = service;
     this.token = token;
     this.fetch = fetchImpl;
-    this.sleep = sleep;
+    this.sleepImpl = sleep;
     this.now = now;
+    this.signal = signal;
+  }
+
+  async sleep(milliseconds: number, signal = this.signal): Promise<void> {
+    await wait(milliseconds, this.sleepImpl, signal);
   }
 
   async request<T>(
@@ -106,6 +112,7 @@ export class ApiClient implements ApiClientLike {
       body,
       retrySafe = true,
       readme = false,
+      signal = this.signal,
     }: RequestOptions = {},
   ): Promise<T> {
     const github = this.service === 'GitHub';
@@ -113,14 +120,17 @@ export class ApiClient implements ApiClientLike {
       ? 'https://api.github.com'
       : 'https://api.notion.com/v1';
     for (let attempt = 0; attempt < 4; attempt++) {
-      if (!github) await this.sleep(350);
+      signal?.throwIfAborted();
+      if (!github) await this.sleep(350, signal);
       let response: Response;
       let data: unknown;
       try {
         response = await this.fetch(base + path, {
           method,
           redirect: 'error',
-          signal: AbortSignal.timeout(30_000),
+          signal: signal
+            ? AbortSignal.any([signal, AbortSignal.timeout(30_000)])
+            : AbortSignal.timeout(30_000),
           headers: {
             Authorization: `Bearer ${this.token}`,
             'Content-Type': 'application/json',
@@ -135,18 +145,21 @@ export class ApiClient implements ApiClientLike {
           },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         });
+        signal?.throwIfAborted();
         if (readme && response.status === 404) return '' as T;
         if (response.ok)
           data = readme
             ? await readPrefix(response, 8000)
             : await response.json();
       } catch {
+        signal?.throwIfAborted();
         if (retrySafe && attempt < 3) {
-          await this.sleep(1000 * 2 ** attempt);
+          await this.sleep(1000 * 2 ** attempt, signal);
           continue;
         }
         throw new ApiError(this.service, undefined, !retrySafe);
       }
+      signal?.throwIfAborted();
       // API shapes are checked by the caller before any writes.
       if (response.ok) return data as T;
       const status = response.status;
@@ -170,7 +183,7 @@ export class ApiClient implements ApiClientLike {
         }
         // Do not retry earlier than the server allows or occupy a runner indefinitely.
         if (Number.isFinite(wait) && wait <= 120_000) {
-          await this.sleep(Math.max(wait, 1000 * 2 ** attempt));
+          await this.sleep(Math.max(wait, 1000 * 2 ** attempt), signal);
           continue;
         }
       }
@@ -426,6 +439,7 @@ async function createPage(
   dataSourceId: string,
   id: string,
   properties: Record<string, NotionProperty>,
+  signal?: AbortSignal,
 ): Promise<NotionPage> {
   try {
     const page = await notion.request<NotionPage>('/pages', {
@@ -440,6 +454,7 @@ async function createPage(
       throw new ApiError('Notion', undefined, true);
     return page;
   } catch (error) {
+    signal?.throwIfAborted();
     if (!(error instanceof ApiError) || !error.ambiguous) throw error;
     // A lost response can mean the POST succeeded. Never send another create here.
     try {
@@ -461,12 +476,34 @@ async function createPage(
         }
       }
     } catch {
+      signal?.throwIfAborted();
       // A failed reconciliation is still an unknown create, not an ordinary read failure.
     }
     throw new SyncError(
       `Notion create outcome is unknown for Repository ID ${id}; check Notion and the recovery guide before rerunning`,
     );
   }
+}
+
+// Keep checkpoints around injected clients too, even if their transport ignores signal.
+function withCancellation(
+  client: ApiClientLike,
+  signal?: AbortSignal,
+): ApiClientLike {
+  if (!signal) return client;
+  return {
+    async request<T>(path: string, options?: RequestOptions): Promise<T> {
+      signal.throwIfAborted();
+      const result = await client.request<T>(path, { ...options, signal });
+      signal.throwIfAborted();
+      return result;
+    },
+    async sleep(milliseconds: number): Promise<void> {
+      signal.throwIfAborted();
+      await client.sleep(milliseconds, signal);
+      signal.throwIfAborted();
+    },
+  };
 }
 
 export async function sync(
@@ -476,10 +513,18 @@ export async function sync(
     notion,
     aiDeps,
     stats = { created: 0, updated: 0, skipped: 0, failed: 0 },
+    signal,
   }: SyncDependencies = {},
 ): Promise<SyncStats> {
-  github ??= new ApiClient('GitHub', config.githubToken);
-  notion ??= new ApiClient('Notion', config.notionToken);
+  signal?.throwIfAborted();
+  github = withCancellation(
+    github ?? new ApiClient('GitHub', config.githubToken),
+    signal,
+  );
+  notion = withCancellation(
+    notion ?? new ApiClient('Notion', config.notionToken),
+    signal,
+  );
   const schema = await validateSchema(notion, config.dataSourceId);
   const optionNames = new Map<string, string>();
   for (const option of schema.properties['GitHub Topics'].multi_select
@@ -510,7 +555,7 @@ export async function sync(
     } else {
       existing.set(
         id,
-        await createPage(notion, config.dataSourceId, id, properties),
+        await createPage(notion, config.dataSourceId, id, properties, signal),
       );
       stats.created++;
     }
@@ -524,6 +569,7 @@ export async function sync(
       existing,
       stats,
       ...aiDeps,
+      signal,
     });
   return stats;
 }
