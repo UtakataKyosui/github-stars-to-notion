@@ -1,0 +1,12 @@
+{
+  "name": "github-stars-to-notion",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "sync": "node src/cli.mjs",
+    "test": "node --test",
+    "check": "node --check src/sync.mjs && node --check src/cli.mjs && node --check test/sync.test.mjs"
+  }
+}

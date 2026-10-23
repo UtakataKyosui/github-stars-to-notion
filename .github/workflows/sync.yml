@@ -1,0 +1,33 @@
+name: Sync GitHub Stars to Notion
+
+on:
+  schedule:
+    - cron: '17 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# All scheduled and manual runs in this repository share this lock.
+concurrency:
+  group: stars-to-notion-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: Sync stars
+        run: npm run sync
+        env:
+          GITHUB_STAR_USER: ${{ vars.STAR_USER }}
+          GITHUB_TOKEN: ${{ github.token }}
+          NOTION_DATA_SOURCE_ID: ${{ vars.NOTION_DATA_SOURCE_ID }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
