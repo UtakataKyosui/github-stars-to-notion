@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { ApiClient, PROPERTY_TYPES, MANUAL_PROPERTY_TYPES, readConfig, sync } from '../src/sync.mjs';
-import { AI_PROPERTY_TYPES, DEFAULT_MODEL, PROMPT_VERSION, readAiConfig, summaryInput, generateSummary } from '../src/ai.mjs';
-import { main } from '../src/cli.mjs';
+import { ApiClient, PROPERTY_TYPES, MANUAL_PROPERTY_TYPES, readConfig, sync } from '../src/sync.ts';
+import { AI_PROPERTY_TYPES, DEFAULT_MODEL, PROMPT_VERSION, readAiConfig, summaryInput, generateSummary } from '../src/ai.ts';
+import { main } from '../src/cli.ts';
 
 const env = { GITHUB_STAR_USER: 'octocat', GITHUB_TOKEN: 'github-secret', NOTION_TOKEN: 'notion-secret',
   NOTION_DATA_SOURCE_ID: 'a'.repeat(32), CLOUDFLARE_ACCOUNT_ID: 'b'.repeat(32), CLOUDFLARE_API_TOKEN: 'cloudflare-secret' };

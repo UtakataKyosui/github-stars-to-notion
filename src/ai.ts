@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import type { AiConfig, AiSettings, ApiDependencies, Environment, NotionPage, Repository, SummaryDependencies } from './types.ts';
 
 export const DEFAULT_MODEL = '@cf/qwen/qwen3-30b-a3b-fp8';
 export const PROMPT_VERSION = 'ja-summary-v1';
@@ -16,20 +17,22 @@ export const SYSTEM_PROMPT = `公開GitHubリポジトリの概要を日本語�
 URLへのアクセス、コード実行、ツールの使用は行わず、概要本文だけを返してください。思考過程は出力しないでください。 /no_think`;
 
 class AiError extends Error {
-  constructor(message, kind = 'response') {
+  kind: string;
+
+  constructor(message: string, kind = 'response') {
     super(message);
     this.kind = kind;
   }
 }
 
 // AI configuration errors must not prevent the basic synchronization.
-export function readAiConfig(env) {
+export function readAiConfig(env: Environment): AiSettings | undefined {
   const keys = ['CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_AI_MODEL'];
   if (!keys.some(key => env[key]?.trim())) return undefined;
   const accountId = env.CLOUDFLARE_ACCOUNT_ID?.trim();
   const token = env.CLOUDFLARE_API_TOKEN?.trim();
   const model = env.CLOUDFLARE_AI_MODEL?.trim() || DEFAULT_MODEL;
-  if (!/^[a-f\d]{32}$/i.test(accountId ?? '') || !token || /[\r\n]/.test(token)
+  if (!accountId || !/^[a-f\d]{32}$/i.test(accountId) || !token || /[\r\n]/.test(token)
     || !/^@cf\/[a-z\d_-]+\/[a-z\d._-]+$/i.test(model) || model.length > 200) return { invalid: true };
   const maxItems = env.AI_MAX_ITEMS?.trim() || '10';
   const force = env.AI_FORCE_REGENERATE?.trim() || 'false';
@@ -37,15 +40,15 @@ export function readAiConfig(env) {
   return { accountId, token, model, maxItems: Number(maxItems), force: force === 'true' };
 }
 
-function bounded(value, bytes) {
+function bounded(value: string, bytes: number): string {
   return new TextDecoder().decode(Buffer.from(value).subarray(0, bytes), { stream: true });
 }
 
-export function summaryInput(repo, readme) {
+export function summaryInput(repo: Repository, readme: string): string {
   const input = {
     name: bounded(repo.full_name, 512),
     description: bounded(repo.description ?? '', 2000),
-    topics: [],
+    topics: [] as string[],
     readme: bounded(readme, 8000),
   };
   for (const topic of [...new Set((repo.topics ?? []).map(x => x.normalize('NFKC').trim().toLowerCase()).filter(Boolean))].sort()) {
@@ -62,10 +65,18 @@ export function summaryInput(repo, readme) {
   return JSON.stringify(input);
 }
 
-export async function generateSummary(config, input, { fetchImpl = fetch, sleep = delay, now = Date.now } = {}) {
+interface Completion {
+  success?: boolean;
+  result?: {
+    response?: unknown;
+    choices?: { finish_reason?: string; message?: { content?: unknown } }[];
+  };
+}
+
+export async function generateSummary(config: AiConfig, input: string, { fetchImpl = fetch, sleep = delay, now = Date.now }: ApiDependencies = {}): Promise<string> {
   for (let attempt = 0; attempt < 3; attempt++) {
     let response;
-    let data;
+    let data: Completion | undefined;
     try {
       response = await fetchImpl(`https://api.cloudflare.com/client/v4/accounts/${config.accountId}/ai/run/${config.model}`, {
         method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
@@ -73,7 +84,7 @@ export async function generateSummary(config, input, { fetchImpl = fetch, sleep 
         body: JSON.stringify({ messages: [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: input }],
           max_tokens: 512, temperature: 0.2, stream: false }),
       });
-      if (response.ok) data = await response.json();
+      if (response.ok) data = await response.json() as Completion;
     } catch {
       // Retrying inference after a lost response can incur another charge.
       if (attempt < 2) { await sleep(1000 * 2 ** attempt); continue; }
@@ -99,13 +110,14 @@ export async function generateSummary(config, input, { fetchImpl = fetch, sleep 
       || !/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(summary)) throw new AiError('Cloudflare: invalid summary');
     return summary;
   }
+  throw new AiError('Cloudflare: retries exhausted');
 }
 
-const text = (page, key) => (page.properties[key]?.rich_text ?? []).map(x => x.plain_text ?? x.text?.content ?? '').join('');
-const richText = content => ({ rich_text: [{ type: 'text', text: { content } }] });
+const text = (page: NotionPage, key: string): string => (page.properties[key]?.rich_text ?? []).map(x => x.plain_text ?? x.text?.content ?? '').join('');
+const richText = (content: string) => ({ rich_text: [{ type: 'text', text: { content } }] });
 
-export async function syncSummaries(config, { github, notion, schema, stars, existing, stats, fetchImpl, sleep, now = Date.now }) {
-  Object.assign(stats, { ai_generated: 0, ai_skipped: 0, ai_failed: 0, ai_deferred: 0 });
+export async function syncSummaries(config: AiSettings, { github, notion, schema, stars, existing, stats: baseStats, fetchImpl, sleep, now = Date.now }: SummaryDependencies): Promise<void> {
+  const stats = Object.assign(baseStats, { ai_generated: 0, ai_skipped: 0, ai_failed: 0, ai_deferred: 0 });
   if (config.invalid || Object.entries(AI_PROPERTY_TYPES).some(([key, type]) => schema.properties[key]?.type !== type)) {
     stats.ai_failed = 1;
     stats[config.invalid ? 'ai_error_configuration' : 'ai_error_schema'] = 1;
@@ -118,13 +130,14 @@ export async function syncSummaries(config, { github, notion, schema, stars, exi
       // Even cached summaries need a bounded README read to detect changed input.
       const parts = repo.full_name.split('/');
       if (parts.length !== 2 || parts.some(part => !/^[\w.-]+$/.test(part) || part === '.' || part === '..')) throw new AiError('Invalid repository name');
-      const readme = await github.request(`/repos/${parts.map(encodeURIComponent).join('/')}/readme`, { readme: true });
+      const readme = await github.request<string>(`/repos/${parts.map(encodeURIComponent).join('/')}/readme`, { readme: true });
       const input = summaryInput(repo, readme);
       const hash = createHash('sha256').update(input).digest('hex');
       const page = existing.get(id);
+      if (!page) throw new AiError('Missing synchronized Notion page');
       if (!config.force && text(page, 'AI Summary').trim() && text(page, 'AI Input Hash') === hash
         && text(page, 'AI Model') === config.model && text(page, 'AI Prompt Version') === PROMPT_VERSION
-        && Number.isFinite(Date.parse(page.properties['AI Generated At']?.date?.start))) {
+        && Number.isFinite(Date.parse(page.properties['AI Generated At']?.date?.start ?? ''))) {
         stats.ai_skipped++;
         continue;
       }

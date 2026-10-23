@@ -20,7 +20,7 @@ AI概要生成は任意です。Cloudflare設定がなければ基本同期の�
 - 作成・更新・スキップ・失敗の件数をActionsの実行サマリーに表示する。
 
 同期方式はGitHubからNotionへの一方向とし、MVPでは公開リポジトリを対象にします。
-Node.js 24の標準機能のみを使用します。追加のnpmパッケージやインストール処理は不要です。
+Node.js 24で実行します。CLIにはCrust、実行制御には公式アダプター経由でEffect.tsを使用します。GitHub Actionsはnpmキャッシュを利用し、同期前に`npm ci --ignore-scripts --include=dev`で依存をインストールして型チェックを行います。CIではテストとCLIのヘルプ表示も検証します。
 
 ## セットアップ
 
@@ -189,12 +189,20 @@ Actionsサマリーの`ai_generated`（保存成功）、`ai_skipped`（変更�
 
 ## ローカル開発
 
-Node.js 24を用意し、依存インストールなしで実行できます。
+Node.js 24を用意し、lockfileに固定した依存をインストールします。
 
 ```sh
+npm ci --ignore-scripts
 npm run check
 npm test
+npm run sync -- --help
 ```
+
+CLIは`@crustjs/core` / `@crustjs/extensions` 0.5.6、公式Effectアダプター`@crustjs/effect` 0.2.3、Effect 4.0.6を採用しています。各パッケージのNode.js 24対応と、アダプターのEffect v4 peer dependencyに合わせた構成です。
+
+アプリケーションコード（`src/*.ts`）はTypeScriptです。Node.js 24の[type stripping](https://nodejs.org/docs/latest-v24.x/api/typescript.html)で直接実行するため、ビルドやBunは不要です。`npm run check`でTypeScript 7のstrictモードによる型検査を行います。`erasableSyntaxOnly`を有効にし、Node.jsで直接実行できる構文に制限しています。設定・統計・APIクライアント・外部APIのデータ構造・テスト用の依存注入にも型を定義しています。外部レスポンスの実行時検証は引き続き行い、回帰テスト（`test/*.mjs`）からTypeScriptモジュールを直接検証します。
+
+Crustが引数解析とヘルプを担当し、`handler()`でEffectプログラムを実行します。Effectは設定読み込み・同期呼び出しの失敗を処理し、件数レポートとActionsサマリー追記を順に実行します。同期・AIモジュールは既存のPromise APIを維持します。`--help`は設定なしで利用でき、同期もサマリー追記も行いません。不明な引数・フラグは同期前に拒否します。
 
 テストはAPIを模擬し、実際のGitHub/Notion/Cloudflareへ接続しません。基本同期に加え、AI概要の保存と再実行、入力・モデル・プロンプト変更、強制再生成、READMEなし・長大・不正指示、件数制限、AI無効・設定不備、401・429・タイムアウト・保存失敗からの復旧、手入力保持、Secretの非混入を検証します。
 

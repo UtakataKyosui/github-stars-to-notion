@@ -1,5 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { readAiConfig, syncSummaries } from './ai.mjs';
+import { readAiConfig, syncSummaries } from './ai.ts';
+import type { ApiClientLike, ApiDependencies, Environment, NotionPage, NotionProperty, NotionSchema, Repository, RequestOptions, RichText, Star, SyncConfig, SyncDependencies, SyncStats } from './types.ts';
 
 export const NOTION_VERSION = '2025-09-03';
 export const PROPERTY_TYPES = {
@@ -15,14 +16,16 @@ export const MANUAL_PROPERTY_TYPES = { Tags: 'multi_select', Category: 'select' 
 export class SyncError extends Error {}
 
 export class ApiError extends SyncError {
-  constructor(service, status, ambiguous = false) {
+  ambiguous: boolean;
+
+  constructor(service: string, status?: number, ambiguous = false) {
     // Never include response bodies, request URLs, tokens, or upstream messages.
     super(`${service}: ${status ? `HTTP ${status}` : 'network or invalid JSON response'}`);
     this.ambiguous = ambiguous;
   }
 }
 
-export function readConfig(env) {
+export function readConfig(env: Environment): SyncConfig {
   const required = ['GITHUB_TOKEN', 'NOTION_DATA_SOURCE_ID', 'NOTION_TOKEN'];
   for (const key of required) {
     if (!env[key]?.trim()) throw new SyncError(`Missing configuration: ${key}`);
@@ -32,16 +35,22 @@ export function readConfig(env) {
   if (!/^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i.test(user)) {
     throw new SyncError('Invalid GITHUB_STAR_USER');
   }
-  const id = env.NOTION_DATA_SOURCE_ID.trim().replaceAll('-', '');
+  const id = env.NOTION_DATA_SOURCE_ID!.trim().replaceAll('-', '');
   if (!/^[a-f\d]{32}$/i.test(id)) throw new SyncError('Invalid NOTION_DATA_SOURCE_ID');
   for (const key of ['GITHUB_TOKEN', 'NOTION_TOKEN']) {
-    if (/[\r\n]/.test(env[key].trim())) throw new SyncError(`Invalid ${key}`);
+    if (/[\r\n]/.test(env[key]!.trim())) throw new SyncError(`Invalid ${key}`);
   }
-  return { user, dataSourceId: id, githubToken: env.GITHUB_TOKEN.trim(), notionToken: env.NOTION_TOKEN.trim(), ai: readAiConfig(env) };
+  return { user, dataSourceId: id, githubToken: env.GITHUB_TOKEN!.trim(), notionToken: env.NOTION_TOKEN!.trim(), ai: readAiConfig(env) };
 }
 
-export class ApiClient {
-  constructor(service, token, { fetchImpl = fetch, sleep = delay, now = Date.now } = {}) {
+export class ApiClient implements ApiClientLike {
+  service: string;
+  token: string;
+  fetch: typeof fetch;
+  sleep: (milliseconds: number) => Promise<unknown>;
+  now: () => number;
+
+  constructor(service: string, token: string, { fetchImpl = fetch, sleep = delay, now = Date.now }: ApiDependencies = {}) {
     this.service = service;
     this.token = token;
     this.fetch = fetchImpl;
@@ -49,13 +58,13 @@ export class ApiClient {
     this.now = now;
   }
 
-  async request(path, { method = 'GET', body, retrySafe = true, readme = false } = {}) {
+  async request<T>(path: string, { method = 'GET', body, retrySafe = true, readme = false }: RequestOptions = {}): Promise<T> {
     const github = this.service === 'GitHub';
     const base = github ? 'https://api.github.com' : 'https://api.notion.com/v1';
     for (let attempt = 0; attempt < 4; attempt++) {
       if (!github) await this.sleep(350);
       let response;
-      let data;
+      let data: unknown;
       try {
         response = await this.fetch(base + path, {
           method,
@@ -70,7 +79,7 @@ export class ApiClient {
           },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         });
-        if (readme && response.status === 404) return '';
+        if (readme && response.status === 404) return '' as T;
         if (response.ok) data = readme ? await readPrefix(response, 8000) : await response.json();
       } catch {
         if (retrySafe && attempt < 3) {
@@ -79,7 +88,8 @@ export class ApiClient {
         }
         throw new ApiError(this.service, undefined, !retrySafe);
       }
-      if (response.ok) return data;
+      // API shapes are checked by the caller before any writes.
+      if (response.ok) return data as T;
       const status = response.status;
       const retryAfter = response.headers.get('retry-after');
       const rateLimited = status === 429 || (github && status === 403
@@ -101,14 +111,15 @@ export class ApiClient {
       }
       throw new ApiError(this.service, status, !retrySafe && status >= 500);
     }
+    throw new ApiError(this.service);
   }
 }
 
 // Bound README downloads as well as the text later sent to AI.
-async function readPrefix(response, limit) {
+async function readPrefix(response: Response, limit: number): Promise<string> {
   const reader = response.body?.getReader();
   if (!reader) return '';
-  const chunks = [];
+  const chunks: Uint8Array[] = [];
   let length = 0;
   try {
     while (length < limit) {
@@ -125,14 +136,14 @@ async function readPrefix(response, limit) {
   return new TextDecoder().decode(Buffer.concat(chunks), { stream: true });
 }
 
-function invalid(message) {
+function invalid(message: string): never {
   throw new SyncError(message);
 }
 
-export async function listStars(client, user) {
-  const stars = new Map();
+export async function listStars(client: ApiClientLike, user: string): Promise<Map<string, Star>> {
+  const stars = new Map<string, Star>();
   for (let page = 1; ; page++) {
-    const rows = await client.request(`/users/${encodeURIComponent(user)}/starred?per_page=100&page=${page}&sort=created&direction=asc`);
+    const rows = await client.request<{ repo: Repository; starred_at: string }[]>(`/users/${encodeURIComponent(user)}/starred?per_page=100&page=${page}&sort=created&direction=asc`);
     if (!Array.isArray(rows)) invalid('Invalid GitHub Star list');
     for (const row of rows) {
       const repo = row.repo;
@@ -148,25 +159,31 @@ export async function listStars(client, user) {
   }
 }
 
-export async function validateSchema(notion, dataSourceId) {
-  const schema = await notion.request(`/data_sources/${dataSourceId}`);
+export async function validateSchema(notion: ApiClientLike, dataSourceId: string): Promise<NotionSchema> {
+  const schema = await notion.request<NotionSchema>(`/data_sources/${dataSourceId}`);
   for (const [name, type] of Object.entries({ ...PROPERTY_TYPES, ...MANUAL_PROPERTY_TYPES })) {
     if (schema?.properties?.[name]?.type !== type) invalid(`Notion schema: ${name} must be ${type}`);
   }
   return schema;
 }
 
-function textValue(items) {
+function textValue(items: RichText[] | undefined): string {
   if (!Array.isArray(items)) invalid('Invalid Notion text property');
   return items.map(item => item.plain_text ?? item.text?.content ?? '').join('');
 }
 
-export async function queryPages(notion, dataSourceId, filter) {
-  const pages = [];
-  const cursors = new Set();
-  let cursor;
+interface PageQuery {
+  results: NotionPage[];
+  has_more: boolean;
+  next_cursor?: string | null;
+}
+
+export async function queryPages(notion: ApiClientLike, dataSourceId: string, filter?: Record<string, unknown>): Promise<NotionPage[]> {
+  const pages: NotionPage[] = [];
+  const cursors = new Set<string>();
+  let cursor: string | null | undefined;
   do {
-    const result = await notion.request(`/data_sources/${dataSourceId}/query`, {
+    const result = await notion.request<PageQuery>(`/data_sources/${dataSourceId}/query`, {
       method: 'POST',
       body: { page_size: 100, ...(filter && { filter }), ...(cursor && { start_cursor: cursor }) },
     });
@@ -183,8 +200,8 @@ export async function queryPages(notion, dataSourceId, filter) {
   return pages;
 }
 
-function indexPages(pages) {
-  const index = new Map();
+function indexPages(pages: NotionPage[]): Map<string, NotionPage> {
+  const index = new Map<string, NotionPage>();
   for (const page of pages) {
     const id = textValue(page.properties['Repository ID']?.rich_text);
     if (!id) continue; // Allow manually created rows without a repository association.
@@ -195,7 +212,7 @@ function indexPages(pages) {
   return index;
 }
 
-function richText(value) {
+function richText(value: string): RichText[] {
   const chunks = [];
   let chunk = '';
   // Respect the 2,000 UTF-16-unit limit without splitting surrogate pairs.
@@ -211,14 +228,14 @@ function richText(value) {
   return chunks;
 }
 
-function normalizeTopic(name) {
+function normalizeTopic(name: string): string {
   if (typeof name !== 'string') invalid('Invalid GitHub topic name');
   return name.normalize('NFKC').trim().toLowerCase();
 }
 
-function topicsFor(topics = [], optionNames = new Map()) {
+function topicsFor(topics: string[] = [], optionNames = new Map<string, string>()): { name: string }[] {
   if (!Array.isArray(topics)) invalid('Invalid GitHub topics');
-  const names = new Set();
+  const names = new Set<string>();
   for (const topic of topics) {
     const name = normalizeTopic(topic);
     if (!name) continue;
@@ -232,7 +249,7 @@ function topicsFor(topics = [], optionNames = new Map()) {
   return [...names].sort().map(name => ({ name: optionNames.get(name) ?? name }));
 }
 
-export function propertiesFor(id, { repo, starredAt }, optionNames) {
+export function propertiesFor(id: string, { repo, starredAt }: Star, optionNames?: Map<string, string>): Record<string, NotionProperty> {
   return {
     Name: { title: richText(repo.full_name) },
     'Repository ID': { rich_text: richText(id) },
@@ -243,7 +260,7 @@ export function propertiesFor(id, { repo, starredAt }, optionNames) {
   };
 }
 
-function matches(page, properties) {
+function matches(page: NotionPage, properties: Record<string, NotionProperty>): boolean {
   return Object.entries(PROPERTY_TYPES).every(([name, type]) => {
     const current = page.properties[name];
     const wanted = properties[name];
@@ -251,19 +268,20 @@ function matches(page, properties) {
     if (type === 'multi_select') {
       if (!Array.isArray(current.multi_select)) return false;
       const names = new Set(current.multi_select.map(option => option.name));
-      return names.size === wanted.multi_select.length
-        && wanted.multi_select.every(option => names.has(option.name));
+      return names.size === wanted.multi_select!.length
+        && wanted.multi_select!.every(option => names.has(option.name));
     }
     if (type === 'date') return current.date?.end == null
-      && Date.parse(current.date?.start) === Date.parse(wanted.date.start);
+      && Date.parse(current.date?.start ?? '') === Date.parse(wanted.date!.start);
     if (type === 'url') return current.url === wanted.url;
-    return textValue(current[type]) === textValue(wanted[type]);
+    const textType = type as 'title' | 'rich_text';
+    return textValue(current[textType]) === textValue(wanted[textType]);
   });
 }
 
-async function createPage(notion, dataSourceId, id, properties) {
+async function createPage(notion: ApiClientLike, dataSourceId: string, id: string, properties: Record<string, NotionProperty>): Promise<NotionPage> {
   try {
-    const page = await notion.request('/pages', {
+    const page = await notion.request<NotionPage>('/pages', {
       method: 'POST', retrySafe: false,
       body: { parent: { type: 'data_source_id', data_source_id: dataSourceId }, properties },
     });
@@ -293,11 +311,11 @@ async function createPage(notion, dataSourceId, id, properties) {
   }
 }
 
-export async function sync(config, { github, notion, aiDeps, stats = { created: 0, updated: 0, skipped: 0, failed: 0 } } = {}) {
+export async function sync(config: SyncConfig, { github, notion, aiDeps, stats = { created: 0, updated: 0, skipped: 0, failed: 0 } }: SyncDependencies = {}): Promise<SyncStats> {
   github ??= new ApiClient('GitHub', config.githubToken);
   notion ??= new ApiClient('Notion', config.notionToken);
   const schema = await validateSchema(notion, config.dataSourceId);
-  const optionNames = new Map();
+  const optionNames = new Map<string, string>();
   for (const option of schema.properties['GitHub Topics'].multi_select?.options ?? []) {
     const key = normalizeTopic(option.name);
     if (optionNames.has(key)) invalid('Notion GitHub Topics contains duplicate normalized option names');
@@ -306,7 +324,7 @@ export async function sync(config, { github, notion, aiDeps, stats = { created: 
   const stars = await listStars(github, config.user);
   const existing = indexPages(await queryPages(notion, config.dataSourceId));
   // Validate/encode every input before the first write, including text limits.
-  const desired = [...stars].map(([id, star]) => [id, propertiesFor(id, star, optionNames)]);
+  const desired = [...stars].map(([id, star]) => [id, propertiesFor(id, star, optionNames)] as const);
   for (const [id, properties] of desired) {
     const page = existing.get(id);
     if (page && matches(page, properties)) {

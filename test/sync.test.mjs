@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { ApiClient, ApiError, NOTION_VERSION, PROPERTY_TYPES, MANUAL_PROPERTY_TYPES, readConfig, sync, propertiesFor } from '../src/sync.mjs';
-import { main } from '../src/cli.mjs';
+import { ApiClient, ApiError, NOTION_VERSION, PROPERTY_TYPES, MANUAL_PROPERTY_TYPES, readConfig, sync, propertiesFor } from '../src/sync.ts';
+import { main } from '../src/cli.ts';
 
 const env = {
   GITHUB_STAR_USER: 'UtakataKyosui', GITHUB_TOKEN: 'test-github-secret',
