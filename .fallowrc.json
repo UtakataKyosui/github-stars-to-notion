@@ -1,4 +1,4 @@
 {
   "$schema": "./node_modules/fallow/schema.json",
-  "entry": ["src/cli.ts", "test/*.test.mjs"]
+  "entry": ["src/cli.ts", "test/*.test.ts"]
 }

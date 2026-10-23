@@ -10,7 +10,7 @@ const entry = fileURLToPath(
 );
 const cwd = await mkdtemp(join(tmpdir(), 'stars-package-'));
 // No credentials or inherited build variables reach the packaged command.
-const options = { cwd, env: {}, encoding: 'utf8', timeout: 10000 };
+const options = { cwd, env: {}, encoding: 'utf8' as const, timeout: 10000 };
 try {
   const help = execFileSync(process.execPath, [entry, '--help'], options);
   assert.match(help, /Environment:/);

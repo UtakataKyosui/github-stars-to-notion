@@ -19,9 +19,9 @@
   "scripts": {
     "build": "crust build",
     "start": "node .crust/root/bin/github-stars-to-notion.js",
-    "test:build": "node scripts/verify-build.mjs",
+    "test:build": "node scripts/verify-build.ts",
     "sync": "node src/cli.ts",
-    "test": "node --test",
+    "test": "node --test test/*.test.ts",
     "check": "npm run lint && npm run check:types && npm run check:unused",
     "lint": "biome ci .",
     "format": "biome check --write .",

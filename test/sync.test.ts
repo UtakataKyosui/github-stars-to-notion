@@ -12,6 +12,48 @@ import {
   readConfig,
   sync,
 } from '../src/sync.ts';
+import type { NotionSchema, Repository } from '../src/types.ts';
+import {
+  type FixtureOption,
+  type FixturePage,
+  type FixtureProperties,
+  type FixtureStar,
+  type RequestBody,
+  textContent,
+} from './helpers.ts';
+
+interface MockCall {
+  url: URL;
+  method: string | undefined;
+  body: RequestBody;
+  headers: Record<string, string>;
+}
+interface FixtureSchema extends NotionSchema {
+  properties: NotionSchema['properties'] & {
+    'GitHub Topics': {
+      type: string;
+      multi_select: { options: FixtureOption[] };
+    };
+  };
+}
+interface FixtureState {
+  stars: FixtureStar[];
+  pages: FixturePage[];
+  calls: MockCall[];
+  waits: number[];
+  schema: FixtureSchema;
+}
+interface FixtureOptions {
+  stars?: FixtureStar[];
+  pages?: FixturePage[];
+  pageSize?: number;
+  schema?: Record<string, string | undefined>;
+  topicOptions?: FixtureOption[];
+  intercept?: (
+    call: MockCall,
+    state: FixtureState,
+  ) => Response | undefined | Promise<Response | undefined>;
+}
 
 const env = {
   GITHUB_STAR_USER: 'UtakataKyosui',
@@ -20,7 +62,10 @@ const env = {
   NOTION_TOKEN: 'test-notion-secret',
 };
 const config = readConfig(env);
-const star = (id, overrides = {}) => ({
+const star = (
+  id: number,
+  overrides: Record<string, unknown> = {},
+): FixtureStar => ({
   starred_at: '2026-10-01T00:00:00Z',
   repo: {
     id,
@@ -29,16 +74,16 @@ const star = (id, overrides = {}) => ({
     description: 'A useful repository',
     private: false,
     ...overrides,
-  },
+  } as Repository,
 });
-const json = (data, status = 200, headers = {}) =>
+const json = (data: unknown, status = 200, headers: HeadersInit = {}) =>
   new Response(JSON.stringify(data), { status, headers });
-const pageFor = (row) => ({
+const pageFor = (row: FixtureStar): FixturePage => ({
   id: `page-${row.repo.id}`,
   properties: propertiesFor(String(row.repo.id), {
     repo: row.repo,
     starredAt: row.starred_at,
-  }),
+  }) as FixtureProperties,
 });
 
 // Exercise production HTTP adapters and synchronization together, with no network access.
@@ -49,19 +94,24 @@ function fixture({
   schema = { ...PROPERTY_TYPES, ...MANUAL_PROPERTY_TYPES },
   topicOptions = [],
   intercept,
-} = {}) {
-  const state = { stars, pages: structuredClone(pages), calls: [], waits: [] };
-  state.schema = {
-    properties: Object.fromEntries(
-      Object.entries(schema).map(([name, type]) => [name, { type }]),
-    ),
+}: FixtureOptions = {}) {
+  const state: FixtureState = {
+    stars,
+    pages: structuredClone(pages),
+    calls: [],
+    waits: [],
+    schema: {
+      properties: Object.fromEntries(
+        Object.entries(schema).map(([name, type]) => [name, { type }]),
+      ),
+    } as FixtureSchema,
   };
   if (state.schema.properties['GitHub Topics']) {
     state.schema.properties['GitHub Topics'].multi_select = {
       options: structuredClone(topicOptions),
     };
   }
-  const savedProperties = (properties) => {
+  const savedProperties = (properties: FixtureProperties) => {
     const saved = structuredClone(properties);
     const options =
       state.schema.properties['GitHub Topics'].multi_select.options;
@@ -77,14 +127,17 @@ function fixture({
     });
     return saved;
   };
-  const fetchImpl = async (url, options) => {
+  const fetchImpl: typeof fetch = async (url, options = {}) => {
+    assert.ok(typeof url === 'string');
     const parsed = new URL(url);
-    const body = options.body ? JSON.parse(options.body) : undefined;
+    const body = (
+      options.body ? JSON.parse(String(options.body)) : undefined
+    ) as RequestBody;
     const call = {
       url: parsed,
       method: options.method,
       body,
-      headers: options.headers,
+      headers: options.headers as Record<string, string>,
     };
     state.calls.push(call);
     const override = await intercept?.(call, state);
@@ -98,8 +151,8 @@ function fixture({
         ? state.pages.filter(
             (page) =>
               page.properties['Repository ID'].rich_text
-                .map((x) => x.text.content)
-                .join('') === body.filter.rich_text.equals,
+                .map(textContent)
+                .join('') === body.filter?.rich_text.equals,
           )
         : state.pages;
       const offset = Number(body.start_cursor ?? 0);
@@ -133,17 +186,17 @@ function fixture({
   };
   const deps = {
     fetchImpl,
-    sleep: async (ms) => {
+    sleep: async (ms: number) => {
       state.waits.push(ms);
     },
   };
-  state.github = new ApiClient('GitHub', env.GITHUB_TOKEN, deps);
-  state.notion = new ApiClient('Notion', env.NOTION_TOKEN, deps);
-  state.writes = () =>
+  const github = new ApiClient('GitHub', env.GITHUB_TOKEN, deps);
+  const notion = new ApiClient('Notion', env.NOTION_TOKEN, deps);
+  const writes = () =>
     state.calls.filter(
       (c) => c.method === 'PATCH' || c.url.pathname === '/v1/pages',
     );
-  return state;
+  return { ...state, github, notion, writes };
 }
 
 test('initial sync creates rows; rerun skips without creating duplicates', async () => {
@@ -168,6 +221,7 @@ test('initial sync creates rows; rerun skips without creating duplicates', async
   });
   assert.equal(creation.headers['Notion-Version'], NOTION_VERSION);
   const github = f.calls.find((c) => c.url.host === 'api.github.com');
+  assert.ok(github);
   assert.equal(github.url.pathname, '/users/UtakataKyosui/starred');
   assert.equal(github.headers.Accept, 'application/vnd.github.star+json');
 });
@@ -266,7 +320,7 @@ test('topic additions, removals and clearing preserve manual Tags, Category and 
 
 test('repositories with empty or omitted topics sync and old pages are backfilled in place', async () => {
   const old = pageFor(star(1));
-  delete old.properties['GitHub Topics'];
+  Reflect.deleteProperty(old.properties, 'GitHub Topics');
   const f = fixture({
     stars: [star(1), star(2, { topics: [] })],
     pages: [old],
@@ -315,7 +369,7 @@ test('classification properties must exist with correct types before any write',
   for (const name of ['GitHub Topics', 'Tags', 'Category']) {
     for (const type of [undefined, 'rich_text']) {
       await t.test(`${name}: ${type ?? 'missing'}`, async () => {
-        const schema = {
+        const schema: Record<string, string | undefined> = {
           ...PROPERTY_TYPES,
           ...MANUAL_PROPERTY_TYPES,
           [name]: type,
@@ -369,11 +423,13 @@ test('rename, transfer, description and star date changes update the same page, 
 
 test('Notion plain_text and equivalent ISO dates do not cause unnecessary updates', async () => {
   const page = pageFor(star(1));
-  for (const name of ['Name', 'Description', 'Repository ID']) {
-    const type = PROPERTY_TYPES[name];
-    page.properties[name][type] = page.properties[name][type].map((x) => ({
-      plain_text: x.text.content,
-    }));
+  for (const name of ['Name', 'Description', 'Repository ID'] as const) {
+    const property = page.properties[name];
+    const plain = (text: import('../src/types.ts').RichText) => ({
+      plain_text: textContent(text),
+    });
+    if (property.title) property.title = property.title.map(plain);
+    if (property.rich_text) property.rich_text = property.rich_text.map(plain);
   }
   page.properties['Starred At'].date.start = '2026-10-01T00:00:00.000+00:00';
   const f = fixture({ pages: [page] });
@@ -455,7 +511,7 @@ test('a partial failure can be rerun without duplicating completed work', async 
       if (
         fail &&
         call.url.pathname === '/v1/pages' &&
-        call.body.properties['Repository ID'].rich_text[0].text.content === '2'
+        textContent(call.body.properties['Repository ID'].rich_text[0]) === '2'
       )
         return json({}, 400);
     },
@@ -532,7 +588,7 @@ test('ambiguous topic creates reconcile existing selections and preserve concurr
 });
 
 test('ambiguous create with delayed visibility is checked again, never recreated', async () => {
-  let saved;
+  let saved: FixturePage | undefined;
   let checks = 0;
   const f = fixture({
     intercept(call, state) {
@@ -540,7 +596,10 @@ test('ambiguous create with delayed visibility is checked again, never recreated
         saved = { id: 'eventually-visible', properties: call.body.properties };
         return json({}, 503);
       }
-      if (call.body?.filter && ++checks === 2) state.pages.push(saved);
+      if (call.body?.filter && ++checks === 2) {
+        assert.ok(saved);
+        state.pages.push(saved);
+      }
     },
   });
   await sync(config, f);
@@ -587,7 +646,7 @@ test('failed reconciliation retains the unknown-create recovery instruction and 
 });
 
 test('safe reads retry 429/503 and network failure; errors and tokens stay out of messages', async () => {
-  const waits = [];
+  const waits: number[] = [];
   let calls = 0;
   const client = new ApiClient('Notion', 'secret', {
     sleep: async (ms) => waits.push(ms),
@@ -618,7 +677,7 @@ test('authentication errors are not retried; oversized Retry-After is respected 
     [403, {}, 1],
     [429, { 'Retry-After': '3600' }, 1],
     [503, {}, 4],
-  ]) {
+  ] as [number, HeadersInit, number][]) {
     await t.test(String(status), async () => {
       let calls = 0;
       const client = new ApiClient('GitHub', 'secret', {
@@ -640,7 +699,7 @@ test('authentication errors are not retried; oversized Retry-After is respected 
 
 test('GitHub primary rate limit reset is honored', async () => {
   let calls = 0;
-  const waits = [];
+  const waits: number[] = [];
   const client = new ApiClient('GitHub', 'secret', {
     now: () => 10_000,
     sleep: async (ms) => waits.push(ms),
@@ -661,8 +720,8 @@ test('text is split without losing Unicode and oversized inputs fail before writ
   const f = fixture({ stars: [star(1, { description })] });
   await sync(config, f);
   const chunks = f.pages[0].properties.Description.rich_text;
-  assert.equal(chunks.map((x) => x.text.content).join(''), description);
-  assert.ok(chunks.every((x) => x.text.content.length <= 2000));
+  assert.equal(chunks.map(textContent).join(''), description);
+  assert.ok(chunks.every((x) => textContent(x).length <= 2000));
   const huge = fixture({
     stars: [star(1), star(2, { description: 'a'.repeat(180_001) })],
   });
@@ -736,7 +795,7 @@ test('default user is the repository owner, while an explicit user takes priorit
 });
 
 test('CLI passes the repository owner as the default synchronization user', async () => {
-  let actualUser;
+  let actualUser: string | undefined;
   const code = await main(
     { ...env, GITHUB_STAR_USER: '', GITHUB_REPOSITORY_OWNER: 'UtakataKyosui' },
     {
@@ -751,8 +810,8 @@ test('CLI passes the repository owner as the default synchronization user', asyn
 });
 
 test('CLI reports partial counts, returns failure, and suppresses unexpected error details', async () => {
-  const logs = [];
-  const reports = [];
+  const logs: string[] = [];
+  const reports: string[] = [];
   const code = await main(
     { ...env, GITHUB_STEP_SUMMARY: '/fake/summary' },
     {

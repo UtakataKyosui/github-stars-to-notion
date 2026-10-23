@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import { withProgressSink } from '@crustjs/progress';
 import { captureExecute } from '@crustjs/testing';
 import { runInteractive } from '@crustjs/testing/interactive';
@@ -15,7 +15,7 @@ const credentials = {
   NOTION_TOKEN: 'notion-secret',
 };
 
-async function workspace(t) {
+async function workspace(t: TestContext) {
   const cwd = await mkdtemp(join(tmpdir(), 'stars-crust-'));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   return cwd;
@@ -62,7 +62,7 @@ test('init scaffolds non-secret settings, refuses overwrite, and sync honors env
       { GITHUB_STAR_USER: 'explicit', GITHUB_REPOSITORY_OWNER: 'owner' },
       'explicit',
     ],
-  ]) {
+  ] as const) {
     const outcome = await createCli(
       { ...credentials, ...extra },
       {
@@ -178,7 +178,7 @@ test('corrupt settings fail safely while help remains available', async (t) => {
       flags: { user: 'example', 'data-source-id': id, 'non-interactive': true },
     });
   await writeFile(join(cwd, '.stars-to-notion/config.json'), '{corrupt-secret');
-  const output = [];
+  const output: string[] = [];
   assert.equal(
     await main(credentials, {
       ...dependencies,
@@ -198,7 +198,7 @@ test('progress cleans up on success and failures without changing sync counts or
   const cwd = await workspace(t);
   for (const kind of ['success', 'ai', 'error']) {
     let terminal = '';
-    const reports = [];
+    const reports: string[] = [];
     const code = await withProgressSink(
       {
         isTTY: true,

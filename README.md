@@ -206,7 +206,7 @@ Biomeとfallowは開発依存としてバージョンを固定しています。
 
 CLIは`@crustjs/core` / `@crustjs/extensions` 0.5.6、公式Effectアダプター`@crustjs/effect` 0.2.3、Effect 4.0.6を採用しています。各パッケージのNode.js 24対応と、アダプターのEffect v4 peer dependencyに合わせた構成です。
 
-アプリケーションコード（`src/*.ts`）はTypeScriptです。Node.js 24の[type stripping](https://nodejs.org/docs/latest-v24.x/api/typescript.html)で直接実行でき、既存の同期・ヘルプ・単体テストにはビルドやBunは不要です。`npm run check`でTypeScript 7のstrictモードによる型検査を行います。`erasableSyntaxOnly`を有効にし、Node.jsで直接実行できる構文に制限しています。設定・統計・APIクライアント・外部APIのデータ構造・テスト用の依存注入にも型を定義しています。外部レスポンスの実行時検証は引き続き行い、回帰テスト（`test/*.mjs`）からTypeScriptモジュールを直接検証します。
+アプリケーションコード（`src/*.ts`）、回帰テスト（`test/*.test.ts`）、配布物の検証スクリプト（`scripts/verify-build.ts`）はTypeScriptです。Node.js 24の[type stripping](https://nodejs.org/docs/latest-v24.x/api/typescript.html)で直接実行でき、既存の同期・ヘルプ・単体テストにはビルドやBunは不要です。`npm run check`でソース・テスト・検証スクリプトをまとめてTypeScript 7のstrictモードで型検査します。`erasableSyntaxOnly`を有効にし、Node.jsで直接実行できる構文に制限しています。設定・統計・APIクライアント・外部APIのデータ構造・テスト用の依存注入にも型を定義しています。外部レスポンスの実行時検証は引き続き行い、テスト用モックにも型を付けています。`npm test`は`test/*.test.ts`を明示して実行し、共通ヘルパーはテストとして実行しません。
 
 Crustが引数解析とヘルプを担当し、`handler()`でEffectプログラムを実行します。Effectは設定読み込み・同期呼び出しの失敗を処理し、件数レポートとActionsサマリー追記を順に実行します。同期・AIモジュールは既存のPromise APIを維持します。`--help`は設定なしで利用でき、同期もサマリー追記も行いません。不明な引数・フラグは同期前に拒否します。
 

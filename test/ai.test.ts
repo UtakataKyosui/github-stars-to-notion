@@ -17,6 +17,38 @@ import {
   readConfig,
   sync,
 } from '../src/sync.ts';
+import type {
+  ApiDependencies,
+  NotionSchema,
+  Repository,
+  RequestOptions,
+} from '../src/types.ts';
+import {
+  type FixturePage,
+  type FixtureStar,
+  type RequestBody,
+  textContent,
+} from './helpers.ts';
+
+interface RecordedOptions extends RequestInit {
+  headers: Record<string, string>;
+}
+interface InferenceBody {
+  max_tokens: number;
+  messages: { role: string; content: string }[];
+}
+interface AiFixtureState {
+  pages: FixturePage[];
+  calls: { url: string; options: RecordedOptions; body: RequestBody }[];
+  aiCalls: { url: string; options: RecordedOptions; body: InferenceBody }[];
+  waits: number[];
+  readme: string;
+  readmeStatus: number;
+  failSave: boolean;
+  infer: (url: string, options: RequestInit) => Response | Promise<Response>;
+  stars: (FixtureStar & { repo: Repository & { topics: string[] } })[];
+  schema: NotionSchema;
+}
 
 const env = {
   GITHUB_STAR_USER: 'octocat',
@@ -26,7 +58,7 @@ const env = {
   CLOUDFLARE_ACCOUNT_ID: 'b'.repeat(32),
   CLOUDFLARE_API_TOKEN: 'cloudflare-secret',
 };
-const json = (body, status = 200, headers = {}) =>
+const json = (body: unknown, status = 200, headers: HeadersInit = {}) =>
   new Response(JSON.stringify(body), { status, headers });
 const completion = () =>
   json({
@@ -44,7 +76,7 @@ const completion = () =>
   });
 
 function fixture(count = 1) {
-  const f = {
+  const f: AiFixtureState = {
     pages: [],
     calls: [],
     aiCalls: [],
@@ -52,6 +84,9 @@ function fixture(count = 1) {
     readme: '# Tool',
     readmeStatus: 200,
     infer: completion,
+    failSave: false,
+    stars: [],
+    schema: { properties: {} },
   };
   f.stars = Array.from({ length: count }, (_, i) => ({
     starred_at: '2026-10-01T00:00:00Z',
@@ -73,10 +108,13 @@ function fixture(count = 1) {
       }).map(([k, type]) => [k, { type }]),
     ),
   };
-  const fetchImpl = async (url, options) => {
+  const fetchImpl: typeof fetch = async (url, options = {}) => {
+    assert.ok(typeof url === 'string');
     const path = new URL(url).pathname;
-    const body = options.body ? JSON.parse(options.body) : undefined;
-    f.calls.push({ url, options, body });
+    const body = (
+      options.body ? JSON.parse(String(options.body)) : undefined
+    ) as RequestBody;
+    f.calls.push({ url, options: options as RecordedOptions, body });
     if (path.endsWith('/readme'))
       return new Response(f.readme, { status: f.readmeStatus });
     if (url.startsWith('https://api.github.com')) return json(f.stars);
@@ -95,23 +133,35 @@ function fixture(count = 1) {
     if (options.method === 'PATCH') {
       if (body.properties['AI Summary'] && f.failSave) return json({}, 400);
       const page = f.pages.find((p) => path.endsWith(`/${p.id}`));
+      assert.ok(page);
       Object.assign(page.properties, body.properties);
       return json(page);
     }
     throw new Error('Unexpected request');
   };
-  const sleep = async (ms) => f.waits.push(ms);
-  f.github = new ApiClient('GitHub', env.GITHUB_TOKEN, { fetchImpl, sleep });
-  f.notion = new ApiClient('Notion', env.NOTION_TOKEN, { fetchImpl, sleep });
-  f.aiDeps = {
-    fetchImpl: async (url, options) => {
-      f.aiCalls.push({ url, options, body: JSON.parse(options.body) });
+  const sleep = async (ms: number) => f.waits.push(ms);
+  const github = new ApiClient('GitHub', env.GITHUB_TOKEN, {
+    fetchImpl,
+    sleep,
+  });
+  const notion = new ApiClient('Notion', env.NOTION_TOKEN, {
+    fetchImpl,
+    sleep,
+  });
+  const aiDeps: ApiDependencies = {
+    fetchImpl: async (url, options = {}) => {
+      assert.ok(typeof url === 'string');
+      f.aiCalls.push({
+        url,
+        options: options as RecordedOptions,
+        body: JSON.parse(String(options.body)) as InferenceBody,
+      });
       return f.infer(url, options);
     },
     sleep,
     now: () => Date.parse('2026-10-23T12:00:00Z'),
   };
-  return f;
+  return Object.assign(f, { github, notion, aiDeps });
 }
 
 test('generates in existing/new pages after all basic writes, caches provenance, and preserves manual fields', async () => {
@@ -126,15 +176,15 @@ test('generates in existing/new pages after all basic writes, caches provenance,
   assert.equal(first.ai_generated, 2);
   const page = f.pages[0];
   assert.equal(
-    page.properties['AI Model'].rich_text[0].text.content,
+    textContent(page.properties['AI Model'].rich_text[0]),
     DEFAULT_MODEL,
   );
   assert.match(
-    page.properties['AI Input Hash'].rich_text[0].text.content,
+    textContent(page.properties['AI Input Hash'].rich_text[0]),
     /^[a-f\d]{64}$/,
   );
   assert.equal(
-    page.properties['AI Prompt Version'].rich_text[0].text.content,
+    textContent(page.properties['AI Prompt Version'].rich_text[0]),
     PROMPT_VERSION,
   );
   assert.equal(
@@ -171,6 +221,8 @@ test('generates in existing/new pages after all basic writes, caches provenance,
 test('input, model, prompt changes, empty summary and explicit force regenerate; order-only topics do not', async () => {
   const f = fixture();
   const config = readConfig(env);
+  const ai = config.ai;
+  assert.ok(ai && !ai.invalid);
   await sync(config, f);
   for (const change of [
     () => {
@@ -183,7 +235,7 @@ test('input, model, prompt changes, empty summary and explicit force regenerate;
       f.stars[0].repo.topics.push('new');
     },
     () => {
-      config.ai.model = '@cf/qwen/other-model';
+      ai.model = '@cf/qwen/other-model';
     },
     () => {
       f.pages[0].properties['AI Prompt Version'].rich_text = [];
@@ -192,13 +244,13 @@ test('input, model, prompt changes, empty summary and explicit force regenerate;
       f.pages[0].properties['AI Summary'].rich_text = [];
     },
     () => {
-      config.ai.force = true;
+      ai.force = true;
     },
   ]) {
     change();
     assert.equal((await sync(config, f)).ai_generated, 1);
   }
-  config.ai.force = false;
+  ai.force = false;
   f.stars[0].repo.topics.reverse();
   assert.equal((await sync(config, f)).ai_skipped, 1);
 });
@@ -265,12 +317,14 @@ test('disabled, partial/invalid settings and missing AI schema preserve all basi
 test('per-run generation cap progresses on later runs, including zero and force caps', async () => {
   const f = fixture(3);
   const config = readConfig({ ...env, AI_MAX_ITEMS: '1' });
+  const ai = config.ai;
+  assert.ok(ai && !ai.invalid);
   assert.equal((await sync(config, f)).ai_deferred, 2);
   assert.equal((await sync(config, f)).ai_deferred, 1);
   assert.equal((await sync(config, f)).ai_generated, 1);
   assert.equal(f.aiCalls.length, 3);
-  config.ai.maxItems = 0;
-  config.ai.force = true;
+  ai.maxItems = 0;
+  ai.force = true;
   assert.equal((await sync(config, f)).ai_deferred, 3);
   assert.equal(f.aiCalls.length, 3);
 });
@@ -346,10 +400,13 @@ test('README streaming cancels at its byte limit without a partial Unicode chara
 test('AI never starts if basic synchronization stops partway through', async () => {
   const f = fixture(2);
   const request = f.notion.request.bind(f.notion);
-  f.notion.request = async (path, options) => {
+  f.notion.request = async <T>(
+    path: string,
+    options?: RequestOptions,
+  ): Promise<T> => {
     if (path === '/pages' && f.pages.length === 1)
       throw new Error('basic write failed');
-    return request(path, options);
+    return request<T>(path, options);
   };
   await assert.rejects(sync(readConfig(env), f));
   assert.equal(f.pages.length, 1);
@@ -372,8 +429,9 @@ test('all AI property names and types are checked after basic synchronization', 
 
 test('bounded retries honor Retry-After; valid response and reasoning format are handled', async () => {
   const config = readAiConfig(env);
+  assert.ok(config && !config.invalid);
   let calls = 0;
-  const waits = [];
+  const waits: number[] = [];
   const output = await generateSummary(config, '{}', {
     sleep: async (ms) => waits.push(ms),
     fetchImpl: async () => {
@@ -418,7 +476,7 @@ test('bounded retries honor Retry-After; valid response and reasoning format are
 test('CLI exposes AI failure counts without logging tokens, and workflow passes safe configuration', async () => {
   const f = fixture();
   f.infer = () => json({ message: env.CLOUDFLARE_API_TOKEN }, 401);
-  const logs = [];
+  const logs: string[] = [];
   const code = await main(env, {
     runSync: (config, { stats }) => sync(config, { ...f, stats }),
     write: (s) => logs.push(s),

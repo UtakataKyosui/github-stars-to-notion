@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { main, runCli } from '../src/cli.ts';
+import { type CliDependencies, main, runCli } from '../src/cli.ts';
 
 const env = {
   GITHUB_TOKEN: 'github-test-secret',
@@ -16,7 +16,7 @@ const env = {
 const cliPath = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
 
 test('Crust help bypasses configuration, synchronization and summary writing', async () => {
-  const logs = [];
+  const logs: string[] = [];
   const unexpected = () => {
     assert.fail('Help must have no sync side effects');
   };
@@ -39,9 +39,9 @@ test('Crust help bypasses configuration, synchronization and summary writing', a
 });
 
 test('Effect execution preserves success counts, summary append and invocation isolation', async () => {
-  const logs = [];
-  const writes = [];
-  const deps = {
+  const logs: string[] = [];
+  const writes: Parameters<NonNullable<CliDependencies['append']>>[] = [];
+  const deps: CliDependencies = {
     runSync: async (config, { stats }) => {
       assert.equal(config.user, 'example');
       stats.created = 2;
@@ -63,7 +63,7 @@ test('Effect execution preserves success counts, summary append and invocation i
 });
 
 test('Effect handles configuration and summary failures without leaking details', async () => {
-  const logs = [];
+  const logs: string[] = [];
   assert.equal(
     await main(
       {},
@@ -118,6 +118,13 @@ test('actual entry point supports help and rejects invalid argv without echoing 
           stdio: 'pipe',
         }),
       (error) => {
+        assert.ok(
+          error instanceof Error &&
+            'status' in error &&
+            'stdout' in error &&
+            'stderr' in error,
+        );
+        assert.ok(typeof error.stderr === 'string');
         assert.equal(error.status, 1);
         assert.equal(error.stdout, '');
         assert.match(error.stderr, /--help/);
@@ -138,6 +145,13 @@ test('actual entry point supports help and rejects invalid argv without echoing 
         stdio: 'pipe',
       }),
     (error) => {
+      assert.ok(
+        error instanceof Error &&
+          'status' in error &&
+          'stdout' in error &&
+          'stderr' in error,
+      );
+      assert.ok(typeof error.stdout === 'string');
       assert.equal(error.status, 1);
       assert.match(error.stdout, /Missing configuration: GITHUB_TOKEN/);
       assert.equal(error.stderr, '');
@@ -161,7 +175,7 @@ test('importing the CLI does not execute it', () => {
 
 test('unexpected Effect defects reach the CLI boundary without exposing their message', async () => {
   const exitCode = process.exitCode;
-  const errors = [];
+  const errors: string[] = [];
   try {
     assert.equal(
       await main(env, {

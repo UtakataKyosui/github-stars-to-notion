@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import test from 'node:test';
-import { createCli, runCli } from '../src/cli.ts';
+import test, { type TestContext } from 'node:test';
+import { type CliDependencies, createCli, runCli } from '../src/cli.ts';
 
 const id = 'a'.repeat(32);
 const dotenv = [
@@ -19,7 +19,7 @@ const dotenv = [
   'NODE_OPTIONS=--require=/must-not-execute.cjs',
 ].join('\n');
 
-async function workspace(t) {
+async function workspace(t: TestContext) {
   const cwd = await mkdtemp(join(tmpdir(), 'stars-env-'));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   return cwd;
@@ -35,6 +35,7 @@ test('CLI loads .env including AI settings without mutating process.env', async 
       cwd,
       interactive: false,
       runSync: async (config) => {
+        assert.ok(config.ai && !config.ai.invalid);
         assert.equal(config.user, 'file-user');
         assert.equal(config.githubToken, 'dotenv-github-secret');
         assert.equal(config.notionToken, 'dotenv-notion-secret');
@@ -94,16 +95,20 @@ test('optional .env may be absent; explicit missing and unreadable files fail sa
       calls++;
     },
   };
-  assert.equal((await createCli(env, deps).app.run([])).result, 0);
+  const initial = await createCli(env, deps).app.run([]);
+  assert.equal(initial.status, 'completed');
+  assert.equal(initial.result, 0);
   assert.equal(calls, 1);
   const explicit = await createCli(env, deps).app.run([], {
     flags: { 'env-file': 'missing-private-path.env' },
   });
+  assert.equal(explicit.status, 'completed');
   assert.equal(explicit.result, 1);
   assert.match(explicit.stdout, /Could not read the environment file/);
   assert.doesNotMatch(explicit.stdout, /missing-private-path|shell-secret/);
   await mkdir(join(cwd, '.env'));
   const unreadable = await createCli(env, deps).app.run([]);
+  assert.equal(unreadable.status, 'completed');
   assert.equal(unreadable.result, 1);
   assert.equal(calls, 1);
   assert.equal(
@@ -121,8 +126,8 @@ test('help and init ignore dotenv; invalid dotenv values never appear in reports
       'GITHUB_STAR_USER=private/invalid-value',
     ),
   );
-  const output = [];
-  const deps = {
+  const output: string[] = [];
+  const deps: CliDependencies = {
     cwd,
     interactive: false,
     write: (text) => output.push(text),

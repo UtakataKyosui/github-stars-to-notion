@@ -16,11 +16,14 @@ import {
   readConfig,
   sync,
 } from '../src/sync.ts';
+import type { ApiDependencies, SyncStats } from '../src/types.ts';
+import { mockClient } from './helpers.ts';
 
 const ai = readAiConfig({
   CLOUDFLARE_ACCOUNT_ID: 'b'.repeat(32),
   CLOUDFLARE_API_TOKEN: 'test',
 });
+assert.ok(ai && !ai.invalid);
 
 const env = {
   GITHUB_TOKEN: 'test',
@@ -45,8 +48,11 @@ const schema = {
   ),
 };
 
-function pendingResponse(signal, controller) {
-  return new Promise((_, reject) => {
+function pendingResponse(
+  signal: AbortSignal,
+  controller: AbortController,
+): Promise<Response> {
+  return new Promise<Response>((_, reject) => {
     signal.addEventListener('abort', () => reject(signal.reason), {
       once: true,
     });
@@ -59,9 +65,10 @@ test('GitHub and AI requests abort without retries when the invocation is cancel
     const controller = new AbortController();
     let calls = 0;
     let waits = 0;
-    const dependencies = {
+    const dependencies: ApiDependencies = {
       signal: controller.signal,
-      fetchImpl: (_url, { signal }) => {
+      fetchImpl: (_url, { signal } = {}) => {
+        assert.ok(signal);
         calls++;
         return pendingResponse(signal, controller);
       },
@@ -175,7 +182,9 @@ test('SIGINT stops the real synchronization before a Notion create or AI save', 
       child.stdout,
       /summary-appended|Basic sync completed|AI processing completed/,
     );
-    const result = JSON.parse(child.stdout.trim().split('\n').at(-1));
+    const lastLine = child.stdout.trim().split('\n').at(-1);
+    assert.ok(lastLine);
+    const result: unknown = JSON.parse(lastLine);
     assert.deepEqual(result, {
       code: 130,
       writes: stage === 'stars' ? 0 : 1,
@@ -188,8 +197,8 @@ test('cancellation during ambiguous-create reconciliation propagates without ano
   const controller = new AbortController();
   let queries = 0;
   let creates = 0;
-  const notion = {
-    async request(path) {
+  const notion = mockClient(
+    async (path) => {
       if (path === '/pages') {
         creates++;
         throw new ApiError('Notion', undefined, true);
@@ -200,13 +209,13 @@ test('cancellation during ambiguous-create reconciliation propagates without ano
       }
       return schema;
     },
-    async sleep() {
+    async () => {
       controller.abort();
     },
-  };
-  const github = {
-    request: async () => [{ repo, starred_at: '2026-10-01T00:00:00Z' }],
-  };
+  );
+  const github = mockClient(async () => [
+    { repo, starred_at: '2026-10-01T00:00:00Z' },
+  ]);
   await assert.rejects(
     sync(readConfig(env), { notion, github, signal: controller.signal }),
     { name: 'AbortError' },
@@ -217,7 +226,7 @@ test('cancellation during ambiguous-create reconciliation propagates without ano
 
 test('AI cancellation stops the remaining items without counting an item failure', async () => {
   const controller = new AbortController();
-  const stats = { created: 0, updated: 0, skipped: 0, failed: 0 };
+  const stats: SyncStats = { created: 0, updated: 0, skipped: 0, failed: 0 };
   let readmes = 0;
   let generations = 0;
   let saves = 0;
@@ -231,17 +240,13 @@ test('AI cancellation stops the remaining items without counting an item failure
       stars,
       existing: new Map(['1', '2'].map((id) => [id, { id, properties: {} }])),
       signal: controller.signal,
-      github: {
-        request: async () => {
-          readmes++;
-          return '# Tool';
-        },
-      },
-      notion: {
-        request: async () => {
-          saves++;
-        },
-      },
+      github: mockClient(async () => {
+        readmes++;
+        return '# Tool';
+      }),
+      notion: mockClient(async () => {
+        saves++;
+      }),
       fetchImpl: async () => {
         generations++;
         controller.abort();
