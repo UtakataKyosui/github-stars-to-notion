@@ -15,7 +15,10 @@ export async function main(env = process.env, { runSync = sync, write = console.
     '## GitHub Stars → Notion', '',
     '| Result | Count |', '| --- | ---: |',
     ...Object.entries(stats).map(([key, value]) => `| ${key} | ${value} |`),
-    '', failure ? `Sync stopped: ${failure}` : 'Sync completed.', '',
+    '', failure ? `Sync stopped: ${failure}` : 'Basic sync completed.',
+    failure && stats.ai_generated === undefined ? 'AI processing was not started.'
+      : stats.ai_failed ? 'AI processing had failures. Basic sync data is preserved; check AI configuration/schema and retry.'
+      : stats.ai_generated !== undefined ? 'AI processing completed.' : 'AI disabled (Cloudflare configuration is absent).', '',
   ].join('\n');
   write(report);
   if (env.GITHUB_STEP_SUMMARY) {
@@ -26,7 +29,7 @@ export async function main(env = process.env, { runSync = sync, write = console.
       return 1;
     }
   }
-  return failure ? 1 : 0;
+  return failure || stats.ai_failed ? 1 : 0;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -7,6 +7,6 @@
   "scripts": {
     "sync": "node src/cli.mjs",
     "test": "node --test",
-    "check": "node --check src/sync.mjs && node --check src/cli.mjs && node --check test/sync.test.mjs"
+    "check": "node --check src/sync.mjs && node --check src/ai.mjs && node --check src/cli.mjs && node --check test/sync.test.mjs && node --check test/ai.test.mjs"
   }
 }

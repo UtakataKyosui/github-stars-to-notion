@@ -1,4 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import { readAiConfig, syncSummaries } from './ai.mjs';
 
 export const NOTION_VERSION = '2025-09-03';
 export const PROPERTY_TYPES = {
@@ -36,7 +37,7 @@ export function readConfig(env) {
   for (const key of ['GITHUB_TOKEN', 'NOTION_TOKEN']) {
     if (/[\r\n]/.test(env[key].trim())) throw new SyncError(`Invalid ${key}`);
   }
-  return { user, dataSourceId: id, githubToken: env.GITHUB_TOKEN.trim(), notionToken: env.NOTION_TOKEN.trim() };
+  return { user, dataSourceId: id, githubToken: env.GITHUB_TOKEN.trim(), notionToken: env.NOTION_TOKEN.trim(), ai: readAiConfig(env) };
 }
 
 export class ApiClient {
@@ -48,7 +49,7 @@ export class ApiClient {
     this.now = now;
   }
 
-  async request(path, { method = 'GET', body, retrySafe = true } = {}) {
+  async request(path, { method = 'GET', body, retrySafe = true, readme = false } = {}) {
     const github = this.service === 'GitHub';
     const base = github ? 'https://api.github.com' : 'https://api.notion.com/v1';
     for (let attempt = 0; attempt < 4; attempt++) {
@@ -64,12 +65,13 @@ export class ApiClient {
             Authorization: `Bearer ${this.token}`,
             'Content-Type': 'application/json',
             ...(github
-              ? { Accept: 'application/vnd.github.star+json', 'X-GitHub-Api-Version': '2026-03-10' }
+              ? { Accept: readme ? 'application/vnd.github.raw+json' : 'application/vnd.github.star+json', 'X-GitHub-Api-Version': '2026-03-10' }
               : { 'Notion-Version': NOTION_VERSION }),
           },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         });
-        if (response.ok) data = await response.json();
+        if (readme && response.status === 404) return '';
+        if (response.ok) data = readme ? await readPrefix(response, 8000) : await response.json();
       } catch {
         if (retrySafe && attempt < 3) {
           await this.sleep(1000 * 2 ** attempt);
@@ -100,6 +102,27 @@ export class ApiClient {
       throw new ApiError(this.service, status, !retrySafe && status >= 500);
     }
   }
+}
+
+// Bound README downloads as well as the text later sent to AI.
+async function readPrefix(response, limit) {
+  const reader = response.body?.getReader();
+  if (!reader) return '';
+  const chunks = [];
+  let length = 0;
+  try {
+    while (length < limit) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const part = value.subarray(0, limit - length);
+      chunks.push(part);
+      length += part.length;
+    }
+  } finally {
+    await reader.cancel();
+  }
+  // Discard an incomplete final UTF-8 sequence at the byte boundary.
+  return new TextDecoder().decode(Buffer.concat(chunks), { stream: true });
 }
 
 function invalid(message) {
@@ -245,6 +268,7 @@ async function createPage(notion, dataSourceId, id, properties) {
       body: { parent: { type: 'data_source_id', data_source_id: dataSourceId }, properties },
     });
     if (typeof page?.id !== 'string') throw new ApiError('Notion', undefined, true);
+    return page;
   } catch (error) {
     if (!(error instanceof ApiError) || !error.ambiguous) throw error;
     // A lost response can mean the POST succeeded. Never send another create here.
@@ -259,7 +283,7 @@ async function createPage(notion, dataSourceId, id, properties) {
           if (!matches(found, properties)) {
             await notion.request(`/pages/${encodeURIComponent(found.id)}`, { method: 'PATCH', body: { properties } });
           }
-          return;
+          return found;
         }
       }
     } catch {
@@ -269,7 +293,7 @@ async function createPage(notion, dataSourceId, id, properties) {
   }
 }
 
-export async function sync(config, { github, notion, stats = { created: 0, updated: 0, skipped: 0, failed: 0 } } = {}) {
+export async function sync(config, { github, notion, aiDeps, stats = { created: 0, updated: 0, skipped: 0, failed: 0 } } = {}) {
   github ??= new ApiClient('GitHub', config.githubToken);
   notion ??= new ApiClient('Notion', config.notionToken);
   const schema = await validateSchema(notion, config.dataSourceId);
@@ -291,9 +315,10 @@ export async function sync(config, { github, notion, stats = { created: 0, updat
       await notion.request(`/pages/${encodeURIComponent(page.id)}`, { method: 'PATCH', body: { properties } });
       stats.updated++;
     } else {
-      await createPage(notion, config.dataSourceId, id, properties);
+      existing.set(id, await createPage(notion, config.dataSourceId, id, properties));
       stats.created++;
     }
   }
+  if (config.ai) await syncSummaries(config.ai, { github, notion, schema, stars, existing, stats, ...aiDeps });
   return stats;
 }
