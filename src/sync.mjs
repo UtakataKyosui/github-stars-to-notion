@@ -7,7 +7,9 @@ export const PROPERTY_TYPES = {
   URL: 'url',
   Description: 'rich_text',
   'Starred At': 'date',
+  'GitHub Topics': 'multi_select',
 };
+export const MANUAL_PROPERTY_TYPES = { Tags: 'multi_select', Category: 'select' };
 
 export class SyncError extends Error {}
 
@@ -125,9 +127,10 @@ export async function listStars(client, user) {
 
 export async function validateSchema(notion, dataSourceId) {
   const schema = await notion.request(`/data_sources/${dataSourceId}`);
-  for (const [name, type] of Object.entries(PROPERTY_TYPES)) {
+  for (const [name, type] of Object.entries({ ...PROPERTY_TYPES, ...MANUAL_PROPERTY_TYPES })) {
     if (schema?.properties?.[name]?.type !== type) invalid(`Notion schema: ${name} must be ${type}`);
   }
+  return schema;
 }
 
 function textValue(items) {
@@ -185,13 +188,35 @@ function richText(value) {
   return chunks;
 }
 
-export function propertiesFor(id, { repo, starredAt }) {
+function normalizeTopic(name) {
+  if (typeof name !== 'string') invalid('Invalid GitHub topic name');
+  return name.normalize('NFKC').trim().toLowerCase();
+}
+
+function topicsFor(topics = [], optionNames = new Map()) {
+  if (!Array.isArray(topics)) invalid('Invalid GitHub topics');
+  const names = new Set();
+  for (const topic of topics) {
+    const name = normalizeTopic(topic);
+    if (!name) continue;
+    // Keep a conservative 100 UTF-16-unit name limit; never truncate and merge tags.
+    if (name.length > 100 || /[,\u0000-\u001f\u007f]/u.test(name)) {
+      invalid('GitHub topic exceeds Notion name limits or contains unsupported characters');
+    }
+    names.add(name);
+  }
+  if (names.size > 100) invalid('GitHub topics exceed Notion multi-select limit (100)');
+  return [...names].sort().map(name => ({ name: optionNames.get(name) ?? name }));
+}
+
+export function propertiesFor(id, { repo, starredAt }, optionNames) {
   return {
     Name: { title: richText(repo.full_name) },
     'Repository ID': { rich_text: richText(id) },
     URL: { url: repo.html_url },
     Description: { rich_text: richText(repo.description ?? '') },
     'Starred At': { date: { start: starredAt } },
+    'GitHub Topics': { multi_select: topicsFor(repo.topics, optionNames) },
   };
 }
 
@@ -200,6 +225,12 @@ function matches(page, properties) {
     const current = page.properties[name];
     const wanted = properties[name];
     if (!current) return false;
+    if (type === 'multi_select') {
+      if (!Array.isArray(current.multi_select)) return false;
+      const names = new Set(current.multi_select.map(option => option.name));
+      return names.size === wanted.multi_select.length
+        && wanted.multi_select.every(option => names.has(option.name));
+    }
     if (type === 'date') return current.date?.end == null
       && Date.parse(current.date?.start) === Date.parse(wanted.date.start);
     if (type === 'url') return current.url === wanted.url;
@@ -241,11 +272,17 @@ async function createPage(notion, dataSourceId, id, properties) {
 export async function sync(config, { github, notion, stats = { created: 0, updated: 0, skipped: 0, failed: 0 } } = {}) {
   github ??= new ApiClient('GitHub', config.githubToken);
   notion ??= new ApiClient('Notion', config.notionToken);
-  await validateSchema(notion, config.dataSourceId);
+  const schema = await validateSchema(notion, config.dataSourceId);
+  const optionNames = new Map();
+  for (const option of schema.properties['GitHub Topics'].multi_select?.options ?? []) {
+    const key = normalizeTopic(option.name);
+    if (optionNames.has(key)) invalid('Notion GitHub Topics contains duplicate normalized option names');
+    optionNames.set(key, option.name);
+  }
   const stars = await listStars(github, config.user);
   const existing = indexPages(await queryPages(notion, config.dataSourceId));
   // Validate/encode every input before the first write, including text limits.
-  const desired = [...stars].map(([id, star]) => [id, propertiesFor(id, star)]);
+  const desired = [...stars].map(([id, star]) => [id, propertiesFor(id, star, optionNames)]);
   for (const [id, properties] of desired) {
     const page = existing.get(id);
     if (page && matches(page, properties)) {
