@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { realpathSync } from 'node:fs';
 import { appendFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { Crust, defineCommand } from '@crustjs/core';
@@ -253,9 +254,16 @@ export async function main(
   return runCli([], env, dependencies);
 }
 
-if (
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(process.argv[1]).href
-) {
+function isEntryPoint(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(entry)).href;
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) {
   process.exitCode = await runCli(process.argv.slice(2));
 }
