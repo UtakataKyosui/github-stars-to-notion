@@ -20,11 +20,12 @@ export class ApiError extends SyncError {
 }
 
 export function readConfig(env) {
-  const required = ['GITHUB_STAR_USER', 'GITHUB_TOKEN', 'NOTION_DATA_SOURCE_ID', 'NOTION_TOKEN'];
+  const required = ['GITHUB_TOKEN', 'NOTION_DATA_SOURCE_ID', 'NOTION_TOKEN'];
   for (const key of required) {
     if (!env[key]?.trim()) throw new SyncError(`Missing configuration: ${key}`);
   }
-  const user = env.GITHUB_STAR_USER.trim();
+  const user = env.GITHUB_STAR_USER?.trim() || env.GITHUB_REPOSITORY_OWNER?.trim();
+  if (!user) throw new SyncError('Missing configuration: GITHUB_STAR_USER or GITHUB_REPOSITORY_OWNER');
   if (!/^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i.test(user)) {
     throw new SyncError('Invalid GITHUB_STAR_USER');
   }

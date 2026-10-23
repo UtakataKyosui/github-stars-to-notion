@@ -10,7 +10,7 @@ MVPの同期スクリプト、定期・手動実行のGitHub Actions、自動テ
 
 ## MVP
 
-- 対象ユーザーの公開Star一覧をページネーション込みで取得する。
+- デフォルトでは、このリポジトリの所有者の公開Star一覧をページネーション込みで取得する。`STAR_USER`で別ユーザーを指定できる。
 - 毎日1回の定期実行と、`workflow_dispatch`による手動実行に対応する。
 - Notionへリポジトリ名、URL、説明、GitHubリポジトリID、Star登録日時を保存する。
 - GitHubリポジトリIDを照合して作成・更新し、再実行やリポジトリの改名でも重複させない。
@@ -48,11 +48,14 @@ Node.js 24の標準機能のみを使用します。追加のnpmパッケージ�
 
 | 種類 | 名前 | 用途 |
 | --- | --- | --- |
-| Actions Variable | `STAR_USER` | Star一覧を取得するユーザー。例：`UtakataKyosui` |
+| Actions Variable（任意） | `STAR_USER` | Star一覧を取得するユーザー。未設定・空欄ならリポジトリ所有者 |
 | Actions Variable | `NOTION_DATA_SOURCE_ID` | 同期先データソースのID |
 | Actions Secret | `NOTION_TOKEN` | 同期先へのアクセスを許可したNotion integrationのトークン |
 
 GitHubのConfiguration Variableでは`GITHUB_`で始まる名前が予約されているため、設定名は`STAR_USER`とします。Workflow内でスクリプトの環境変数`GITHUB_STAR_USER`に渡します。
+
+未設定の場合は、Actionsが自動で設定する`GITHUB_REPOSITORY_OWNER`を使用します。このリポジトリでは`UtakataKyosui`、個人アカウントへforkした場合はfork先の所有者です。手動実行した人やコミットした人には切り替わりません。組織所有のリポジトリで利用する場合は、`STAR_USER`に同期したい個人ユーザーを指定してください。
+同期先は常に`NOTION_DATA_SOURCE_ID`で指定したデータソースであり、Notion上の自分のDBを自動で探す動作はありません。必須設定は`NOTION_DATA_SOURCE_ID`と`NOTION_TOKEN`です。
 
 GitHub APIにはActions標準の`GITHUB_TOKEN`を渡すため、個人用PATの登録は不要です。
 `/users/{username}/starred`から指定ユーザーの公開Star一覧を取得し、個人の認証済みStar一覧APIは使用しません。GitHub APIバージョンは`2026-03-10`、Notion APIバージョンは`2025-09-03`に固定しています。
@@ -68,6 +71,8 @@ GitHub APIにはActions標準の`GITHUB_TOKEN`を渡すため、個人用PATの�
 同じリポジトリの定期・手動実行は固定の`concurrency`グループで直列化し、実行中の同期はキャンセルしません。GitHubのconcurrencyでは待機中の実行が新しい実行に置き換わる場合があります。各回で全件照合するため、後続回で取り込みます。
 
 ## 同期と重複防止
+
+Starした公開リポジトリ1件につきNotionに1行を作成します。反映するのは上記の`Name`・`URL`・`Description`・`Repository ID`・`Starred At`の5列です。`Description`はGitHubの説明文をそのまま保存し、README本文やAI概要は保存しません。GitHub Topics、独自タグ・カテゴリの自動分類は#2、Cloudflare Workers AIによる概要生成は#3で対応予定で、このMVPには含まれません。
 
 - 同期前に設定、Notionの列の型、GitHub全ページ、Notion全ページ、既存IDの重複を検証します。不備がある場合は書き込み前に停止します。
 - 一意キーはリポジトリ名・URLではなくGitHubリポジトリIDです。改名・移管後も同じNotionページを更新します。同期する5列はGitHubの値を正とします。

@@ -289,6 +289,24 @@ test('configuration is validated without echoing invalid values', () => {
   assert.throws(() => readConfig({ ...env, NOTION_DATA_SOURCE_ID: 'secret' }), { message: 'Invalid NOTION_DATA_SOURCE_ID' });
 });
 
+test('default user is the repository owner, while an explicit user takes priority over the owner and actor', () => {
+  for (const value of [undefined, '', '   ']) {
+    assert.equal(readConfig({ ...env, GITHUB_STAR_USER: value, GITHUB_REPOSITORY_OWNER: 'UtakataKyosui', GITHUB_ACTOR: 'another-user' }).user, 'UtakataKyosui');
+  }
+  assert.equal(readConfig({ ...env, GITHUB_STAR_USER: ' octocat ', GITHUB_REPOSITORY_OWNER: 'UtakataKyosui' }).user, 'octocat');
+  assert.throws(() => readConfig({ ...env, GITHUB_STAR_USER: undefined, GITHUB_ACTOR: 'another-user' }), /Missing configuration/);
+  assert.throws(() => readConfig({ ...env, GITHUB_STAR_USER: 'bad/secret', GITHUB_REPOSITORY_OWNER: 'UtakataKyosui' }), /Invalid GITHUB_STAR_USER/);
+});
+
+test('CLI passes the repository owner as the default synchronization user', async () => {
+  let actualUser;
+  const code = await main({ ...env, GITHUB_STAR_USER: '', GITHUB_REPOSITORY_OWNER: 'UtakataKyosui' }, {
+    runSync: async (config) => { actualUser = config.user; }, write: () => {},
+  });
+  assert.equal(code, 0);
+  assert.equal(actualUser, 'UtakataKyosui');
+});
+
 test('CLI reports partial counts, returns failure, and suppresses unexpected error details', async () => {
   const logs = [];
   const reports = [];
