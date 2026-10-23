@@ -1,6 +1,20 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { readAiConfig, syncSummaries } from './ai.ts';
-import type { ApiClientLike, ApiDependencies, Environment, NotionPage, NotionProperty, NotionSchema, Repository, RequestOptions, RichText, Star, SyncConfig, SyncDependencies, SyncStats } from './types.ts';
+import type {
+  ApiClientLike,
+  ApiDependencies,
+  Environment,
+  NotionPage,
+  NotionProperty,
+  NotionSchema,
+  Repository,
+  RequestOptions,
+  RichText,
+  Star,
+  SyncConfig,
+  SyncDependencies,
+  SyncStats,
+} from './types.ts';
 
 export const NOTION_VERSION = '2025-09-03';
 export const PROPERTY_TYPES = {
@@ -11,7 +25,10 @@ export const PROPERTY_TYPES = {
   'Starred At': 'date',
   'GitHub Topics': 'multi_select',
 };
-export const MANUAL_PROPERTY_TYPES = { Tags: 'multi_select', Category: 'select' };
+export const MANUAL_PROPERTY_TYPES = {
+  Tags: 'multi_select',
+  Category: 'select',
+};
 
 export class SyncError extends Error {}
 
@@ -20,27 +37,47 @@ export class ApiError extends SyncError {
 
   constructor(service: string, status?: number, ambiguous = false) {
     // Never include response bodies, request URLs, tokens, or upstream messages.
-    super(`${service}: ${status ? `HTTP ${status}` : 'network or invalid JSON response'}`);
+    super(
+      `${service}: ${status ? `HTTP ${status}` : 'network or invalid JSON response'}`,
+    );
     this.ambiguous = ambiguous;
   }
 }
 
 export function readConfig(env: Environment): SyncConfig {
-  const required = ['GITHUB_TOKEN', 'NOTION_DATA_SOURCE_ID', 'NOTION_TOKEN'];
-  for (const key of required) {
-    if (!env[key]?.trim()) throw new SyncError(`Missing configuration: ${key}`);
-  }
-  const user = env.GITHUB_STAR_USER?.trim() || env.GITHUB_REPOSITORY_OWNER?.trim();
-  if (!user) throw new SyncError('Missing configuration: GITHUB_STAR_USER or GITHUB_REPOSITORY_OWNER');
+  const required = (key: string): string => {
+    const value = env[key]?.trim();
+    if (!value) throw new SyncError(`Missing configuration: ${key}`);
+    return value;
+  };
+  const githubToken = required('GITHUB_TOKEN');
+  const dataSourceId = required('NOTION_DATA_SOURCE_ID');
+  const notionToken = required('NOTION_TOKEN');
+  const user =
+    env.GITHUB_STAR_USER?.trim() || env.GITHUB_REPOSITORY_OWNER?.trim();
+  if (!user)
+    throw new SyncError(
+      'Missing configuration: GITHUB_STAR_USER or GITHUB_REPOSITORY_OWNER',
+    );
   if (!/^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/i.test(user)) {
     throw new SyncError('Invalid GITHUB_STAR_USER');
   }
-  const id = env.NOTION_DATA_SOURCE_ID!.trim().replaceAll('-', '');
-  if (!/^[a-f\d]{32}$/i.test(id)) throw new SyncError('Invalid NOTION_DATA_SOURCE_ID');
-  for (const key of ['GITHUB_TOKEN', 'NOTION_TOKEN']) {
-    if (/[\r\n]/.test(env[key]!.trim())) throw new SyncError(`Invalid ${key}`);
+  const id = dataSourceId.replaceAll('-', '');
+  if (!/^[a-f\d]{32}$/i.test(id))
+    throw new SyncError('Invalid NOTION_DATA_SOURCE_ID');
+  for (const [key, token] of [
+    ['GITHUB_TOKEN', githubToken],
+    ['NOTION_TOKEN', notionToken],
+  ]) {
+    if (/[\r\n]/.test(token)) throw new SyncError(`Invalid ${key}`);
   }
-  return { user, dataSourceId: id, githubToken: env.GITHUB_TOKEN!.trim(), notionToken: env.NOTION_TOKEN!.trim(), ai: readAiConfig(env) };
+  return {
+    user,
+    dataSourceId: id,
+    githubToken,
+    notionToken,
+    ai: readAiConfig(env),
+  };
 }
 
 export class ApiClient implements ApiClientLike {
@@ -50,7 +87,11 @@ export class ApiClient implements ApiClientLike {
   sleep: (milliseconds: number) => Promise<unknown>;
   now: () => number;
 
-  constructor(service: string, token: string, { fetchImpl = fetch, sleep = delay, now = Date.now }: ApiDependencies = {}) {
+  constructor(
+    service: string,
+    token: string,
+    { fetchImpl = fetch, sleep = delay, now = Date.now }: ApiDependencies = {},
+  ) {
     this.service = service;
     this.token = token;
     this.fetch = fetchImpl;
@@ -58,12 +99,22 @@ export class ApiClient implements ApiClientLike {
     this.now = now;
   }
 
-  async request<T>(path: string, { method = 'GET', body, retrySafe = true, readme = false }: RequestOptions = {}): Promise<T> {
+  async request<T>(
+    path: string,
+    {
+      method = 'GET',
+      body,
+      retrySafe = true,
+      readme = false,
+    }: RequestOptions = {},
+  ): Promise<T> {
     const github = this.service === 'GitHub';
-    const base = github ? 'https://api.github.com' : 'https://api.notion.com/v1';
+    const base = github
+      ? 'https://api.github.com'
+      : 'https://api.notion.com/v1';
     for (let attempt = 0; attempt < 4; attempt++) {
       if (!github) await this.sleep(350);
-      let response;
+      let response: Response;
       let data: unknown;
       try {
         response = await this.fetch(base + path, {
@@ -74,13 +125,21 @@ export class ApiClient implements ApiClientLike {
             Authorization: `Bearer ${this.token}`,
             'Content-Type': 'application/json',
             ...(github
-              ? { Accept: readme ? 'application/vnd.github.raw+json' : 'application/vnd.github.star+json', 'X-GitHub-Api-Version': '2026-03-10' }
+              ? {
+                  Accept: readme
+                    ? 'application/vnd.github.raw+json'
+                    : 'application/vnd.github.star+json',
+                  'X-GitHub-Api-Version': '2026-03-10',
+                }
               : { 'Notion-Version': NOTION_VERSION }),
           },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         });
         if (readme && response.status === 404) return '' as T;
-        if (response.ok) data = readme ? await readPrefix(response, 8000) : await response.json();
+        if (response.ok)
+          data = readme
+            ? await readPrefix(response, 8000)
+            : await response.json();
       } catch {
         if (retrySafe && attempt < 3) {
           await this.sleep(1000 * 2 ** attempt);
@@ -92,14 +151,20 @@ export class ApiClient implements ApiClientLike {
       if (response.ok) return data as T;
       const status = response.status;
       const retryAfter = response.headers.get('retry-after');
-      const rateLimited = status === 429 || (github && status === 403
-        && (retryAfter !== null || response.headers.get('x-ratelimit-remaining') === '0'));
+      const rateLimited =
+        status === 429 ||
+        (github &&
+          status === 403 &&
+          (retryAfter !== null ||
+            response.headers.get('x-ratelimit-remaining') === '0'));
       const transient = rateLimited || status >= 500;
       if (retrySafe && transient && attempt < 3) {
         const reset = response.headers.get('x-ratelimit-reset');
         let wait = 1000 * 2 ** attempt;
         if (retryAfter !== null) {
-          wait = /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - this.now();
+          wait = /^\d+$/.test(retryAfter)
+            ? Number(retryAfter) * 1000
+            : Date.parse(retryAfter) - this.now();
         } else if (rateLimited && reset !== null) {
           wait = Number(reset) * 1000 - this.now();
         }
@@ -140,18 +205,34 @@ function invalid(message: string): never {
   throw new SyncError(message);
 }
 
-export async function listStars(client: ApiClientLike, user: string): Promise<Map<string, Star>> {
+async function listStars(
+  client: ApiClientLike,
+  user: string,
+): Promise<Map<string, Star>> {
   const stars = new Map<string, Star>();
   for (let page = 1; ; page++) {
-    const rows = await client.request<{ repo: Repository; starred_at: string }[]>(`/users/${encodeURIComponent(user)}/starred?per_page=100&page=${page}&sort=created&direction=asc`);
+    const rows = await client.request<
+      { repo: Repository; starred_at: string }[]
+    >(
+      `/users/${encodeURIComponent(user)}/starred?per_page=100&page=${page}&sort=created&direction=asc`,
+    );
     if (!Array.isArray(rows)) invalid('Invalid GitHub Star list');
     for (const row of rows) {
       const repo = row.repo;
-      if (!repo || !Number.isSafeInteger(repo.id) || repo.id <= 0 || typeof repo.private !== 'boolean'
-        || typeof repo.full_name !== 'string' || !repo.full_name
-        || typeof repo.html_url !== 'string' || !/^https:\/\/github\.com\//.test(repo.html_url)
-        || (repo.description !== null && typeof repo.description !== 'string')
-        || typeof row.starred_at !== 'string' || !Number.isFinite(Date.parse(row.starred_at))) invalid('Invalid GitHub Star entry');
+      if (
+        !repo ||
+        !Number.isSafeInteger(repo.id) ||
+        repo.id <= 0 ||
+        typeof repo.private !== 'boolean' ||
+        typeof repo.full_name !== 'string' ||
+        !repo.full_name ||
+        typeof repo.html_url !== 'string' ||
+        !/^https:\/\/github\.com\//.test(repo.html_url) ||
+        (repo.description !== null && typeof repo.description !== 'string') ||
+        typeof row.starred_at !== 'string' ||
+        !Number.isFinite(Date.parse(row.starred_at))
+      )
+        invalid('Invalid GitHub Star entry');
       if (repo.private) continue;
       stars.set(String(repo.id), { repo, starredAt: row.starred_at });
     }
@@ -159,17 +240,28 @@ export async function listStars(client: ApiClientLike, user: string): Promise<Ma
   }
 }
 
-export async function validateSchema(notion: ApiClientLike, dataSourceId: string): Promise<NotionSchema> {
-  const schema = await notion.request<NotionSchema>(`/data_sources/${dataSourceId}`);
-  for (const [name, type] of Object.entries({ ...PROPERTY_TYPES, ...MANUAL_PROPERTY_TYPES })) {
-    if (schema?.properties?.[name]?.type !== type) invalid(`Notion schema: ${name} must be ${type}`);
+async function validateSchema(
+  notion: ApiClientLike,
+  dataSourceId: string,
+): Promise<NotionSchema> {
+  const schema = await notion.request<NotionSchema>(
+    `/data_sources/${dataSourceId}`,
+  );
+  for (const [name, type] of Object.entries({
+    ...PROPERTY_TYPES,
+    ...MANUAL_PROPERTY_TYPES,
+  })) {
+    if (schema?.properties?.[name]?.type !== type)
+      invalid(`Notion schema: ${name} must be ${type}`);
   }
   return schema;
 }
 
 function textValue(items: RichText[] | undefined): string {
   if (!Array.isArray(items)) invalid('Invalid Notion text property');
-  return items.map(item => item.plain_text ?? item.text?.content ?? '').join('');
+  return items
+    .map((item) => item.plain_text ?? item.text?.content ?? '')
+    .join('');
 }
 
 interface PageQuery {
@@ -178,25 +270,44 @@ interface PageQuery {
   next_cursor?: string | null;
 }
 
-export async function queryPages(notion: ApiClientLike, dataSourceId: string, filter?: Record<string, unknown>): Promise<NotionPage[]> {
+async function queryPages(
+  notion: ApiClientLike,
+  dataSourceId: string,
+  filter?: Record<string, unknown>,
+): Promise<NotionPage[]> {
   const pages: NotionPage[] = [];
   const cursors = new Set<string>();
   let cursor: string | null | undefined;
-  do {
-    const result = await notion.request<PageQuery>(`/data_sources/${dataSourceId}/query`, {
-      method: 'POST',
-      body: { page_size: 100, ...(filter && { filter }), ...(cursor && { start_cursor: cursor }) },
-    });
-    if (!Array.isArray(result?.results) || typeof result.has_more !== 'boolean') invalid('Invalid Notion query response');
+  for (;;) {
+    const result = await notion.request<PageQuery>(
+      `/data_sources/${dataSourceId}/query`,
+      {
+        method: 'POST',
+        body: {
+          page_size: 100,
+          ...(filter && { filter }),
+          ...(cursor && { start_cursor: cursor }),
+        },
+      },
+    );
+    if (!Array.isArray(result?.results) || typeof result.has_more !== 'boolean')
+      invalid('Invalid Notion query response');
     for (const page of result.results) {
-      if (typeof page.id !== 'string' || !page.properties || page.archived || page.in_trash) invalid('Invalid Notion page');
+      if (
+        typeof page.id !== 'string' ||
+        !page.properties ||
+        page.archived ||
+        page.in_trash
+      )
+        invalid('Invalid Notion page');
       pages.push(page);
     }
     if (!result.has_more) break;
     cursor = result.next_cursor;
-    if (typeof cursor !== 'string' || !cursor || cursors.has(cursor)) invalid('Invalid Notion pagination cursor');
+    if (typeof cursor !== 'string' || !cursor || cursors.has(cursor))
+      invalid('Invalid Notion pagination cursor');
     cursors.add(cursor);
-  } while (true);
+  }
   return pages;
 }
 
@@ -205,8 +316,12 @@ function indexPages(pages: NotionPage[]): Map<string, NotionPage> {
   for (const page of pages) {
     const id = textValue(page.properties['Repository ID']?.rich_text);
     if (!id) continue; // Allow manually created rows without a repository association.
-    if (!/^[1-9]\d*$/.test(id)) invalid('Notion contains an invalid Repository ID');
-    if (index.has(id)) invalid(`Notion contains duplicate Repository ID ${id}; resolve duplicates before retrying`);
+    if (!/^[1-9]\d*$/.test(id))
+      invalid('Notion contains an invalid Repository ID');
+    if (index.has(id))
+      invalid(
+        `Notion contains duplicate Repository ID ${id}; resolve duplicates before retrying`,
+      );
     index.set(id, page);
   }
   return index;
@@ -224,7 +339,8 @@ function richText(value: string): RichText[] {
     chunk += char;
   }
   if (chunk) chunks.push({ type: 'text', text: { content: chunk } });
-  if (chunks.length > 100) invalid('GitHub text exceeds Notion property limits');
+  if (chunks.length > 100)
+    invalid('GitHub text exceeds Notion property limits');
   return chunks;
 }
 
@@ -233,23 +349,36 @@ function normalizeTopic(name: string): string {
   return name.normalize('NFKC').trim().toLowerCase();
 }
 
-function topicsFor(topics: string[] = [], optionNames = new Map<string, string>()): { name: string }[] {
+function topicsFor(
+  topics: string[] = [],
+  optionNames = new Map<string, string>(),
+): { name: string }[] {
   if (!Array.isArray(topics)) invalid('Invalid GitHub topics');
   const names = new Set<string>();
   for (const topic of topics) {
     const name = normalizeTopic(topic);
     if (!name) continue;
     // Keep a conservative 100 UTF-16-unit name limit; never truncate and merge tags.
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: Reject control characters in Notion option names.
     if (name.length > 100 || /[,\u0000-\u001f\u007f]/u.test(name)) {
-      invalid('GitHub topic exceeds Notion name limits or contains unsupported characters');
+      invalid(
+        'GitHub topic exceeds Notion name limits or contains unsupported characters',
+      );
     }
     names.add(name);
   }
-  if (names.size > 100) invalid('GitHub topics exceed Notion multi-select limit (100)');
-  return [...names].sort().map(name => ({ name: optionNames.get(name) ?? name }));
+  if (names.size > 100)
+    invalid('GitHub topics exceed Notion multi-select limit (100)');
+  return [...names]
+    .sort()
+    .map((name) => ({ name: optionNames.get(name) ?? name }));
 }
 
-export function propertiesFor(id: string, { repo, starredAt }: Star, optionNames?: Map<string, string>): Record<string, NotionProperty> {
+export function propertiesFor(
+  id: string,
+  { repo, starredAt }: Star,
+  optionNames?: Map<string, string>,
+): Record<string, NotionProperty> {
   return {
     Name: { title: richText(repo.full_name) },
     'Repository ID': { rich_text: richText(id) },
@@ -260,32 +389,55 @@ export function propertiesFor(id: string, { repo, starredAt }: Star, optionNames
   };
 }
 
-function matches(page: NotionPage, properties: Record<string, NotionProperty>): boolean {
+function matches(
+  page: NotionPage,
+  properties: Record<string, NotionProperty>,
+): boolean {
   return Object.entries(PROPERTY_TYPES).every(([name, type]) => {
     const current = page.properties[name];
     const wanted = properties[name];
     if (!current) return false;
     if (type === 'multi_select') {
-      if (!Array.isArray(current.multi_select)) return false;
-      const names = new Set(current.multi_select.map(option => option.name));
-      return names.size === wanted.multi_select!.length
-        && wanted.multi_select!.every(option => names.has(option.name));
+      if (
+        !Array.isArray(current.multi_select) ||
+        !Array.isArray(wanted.multi_select)
+      )
+        return false;
+      const names = new Set(current.multi_select.map((option) => option.name));
+      return (
+        names.size === wanted.multi_select.length &&
+        wanted.multi_select.every((option) => names.has(option.name))
+      );
     }
-    if (type === 'date') return current.date?.end == null
-      && Date.parse(current.date?.start ?? '') === Date.parse(wanted.date!.start);
+    if (type === 'date')
+      return (
+        current.date?.end == null &&
+        Date.parse(current.date?.start ?? '') ===
+          Date.parse(wanted.date?.start ?? '')
+      );
     if (type === 'url') return current.url === wanted.url;
     const textType = type as 'title' | 'rich_text';
     return textValue(current[textType]) === textValue(wanted[textType]);
   });
 }
 
-async function createPage(notion: ApiClientLike, dataSourceId: string, id: string, properties: Record<string, NotionProperty>): Promise<NotionPage> {
+async function createPage(
+  notion: ApiClientLike,
+  dataSourceId: string,
+  id: string,
+  properties: Record<string, NotionProperty>,
+): Promise<NotionPage> {
   try {
     const page = await notion.request<NotionPage>('/pages', {
-      method: 'POST', retrySafe: false,
-      body: { parent: { type: 'data_source_id', data_source_id: dataSourceId }, properties },
+      method: 'POST',
+      retrySafe: false,
+      body: {
+        parent: { type: 'data_source_id', data_source_id: dataSourceId },
+        properties,
+      },
     });
-    if (typeof page?.id !== 'string') throw new ApiError('Notion', undefined, true);
+    if (typeof page?.id !== 'string')
+      throw new ApiError('Notion', undefined, true);
     return page;
   } catch (error) {
     if (!(error instanceof ApiError) || !error.ambiguous) throw error;
@@ -294,12 +446,16 @@ async function createPage(notion: ApiClientLike, dataSourceId: string, id: strin
       for (let attempt = 0; attempt < 3; attempt++) {
         await notion.sleep(1000 * 2 ** attempt);
         const pages = await queryPages(notion, dataSourceId, {
-          property: 'Repository ID', rich_text: { equals: id },
+          property: 'Repository ID',
+          rich_text: { equals: id },
         });
         const found = indexPages(pages).get(id);
         if (found) {
           if (!matches(found, properties)) {
-            await notion.request(`/pages/${encodeURIComponent(found.id)}`, { method: 'PATCH', body: { properties } });
+            await notion.request(`/pages/${encodeURIComponent(found.id)}`, {
+              method: 'PATCH',
+              body: { properties },
+            });
           }
           return found;
         }
@@ -307,36 +463,67 @@ async function createPage(notion: ApiClientLike, dataSourceId: string, id: strin
     } catch {
       // A failed reconciliation is still an unknown create, not an ordinary read failure.
     }
-    throw new SyncError(`Notion create outcome is unknown for Repository ID ${id}; check Notion and the recovery guide before rerunning`);
+    throw new SyncError(
+      `Notion create outcome is unknown for Repository ID ${id}; check Notion and the recovery guide before rerunning`,
+    );
   }
 }
 
-export async function sync(config: SyncConfig, { github, notion, aiDeps, stats = { created: 0, updated: 0, skipped: 0, failed: 0 } }: SyncDependencies = {}): Promise<SyncStats> {
+export async function sync(
+  config: SyncConfig,
+  {
+    github,
+    notion,
+    aiDeps,
+    stats = { created: 0, updated: 0, skipped: 0, failed: 0 },
+  }: SyncDependencies = {},
+): Promise<SyncStats> {
   github ??= new ApiClient('GitHub', config.githubToken);
   notion ??= new ApiClient('Notion', config.notionToken);
   const schema = await validateSchema(notion, config.dataSourceId);
   const optionNames = new Map<string, string>();
-  for (const option of schema.properties['GitHub Topics'].multi_select?.options ?? []) {
+  for (const option of schema.properties['GitHub Topics'].multi_select
+    ?.options ?? []) {
     const key = normalizeTopic(option.name);
-    if (optionNames.has(key)) invalid('Notion GitHub Topics contains duplicate normalized option names');
+    if (optionNames.has(key))
+      invalid(
+        'Notion GitHub Topics contains duplicate normalized option names',
+      );
     optionNames.set(key, option.name);
   }
   const stars = await listStars(github, config.user);
   const existing = indexPages(await queryPages(notion, config.dataSourceId));
   // Validate/encode every input before the first write, including text limits.
-  const desired = [...stars].map(([id, star]) => [id, propertiesFor(id, star, optionNames)] as const);
+  const desired = [...stars].map(
+    ([id, star]) => [id, propertiesFor(id, star, optionNames)] as const,
+  );
   for (const [id, properties] of desired) {
     const page = existing.get(id);
     if (page && matches(page, properties)) {
       stats.skipped++;
     } else if (page) {
-      await notion.request(`/pages/${encodeURIComponent(page.id)}`, { method: 'PATCH', body: { properties } });
+      await notion.request(`/pages/${encodeURIComponent(page.id)}`, {
+        method: 'PATCH',
+        body: { properties },
+      });
       stats.updated++;
     } else {
-      existing.set(id, await createPage(notion, config.dataSourceId, id, properties));
+      existing.set(
+        id,
+        await createPage(notion, config.dataSourceId, id, properties),
+      );
       stats.created++;
     }
   }
-  if (config.ai) await syncSummaries(config.ai, { github, notion, schema, stars, existing, stats, ...aiDeps });
+  if (config.ai)
+    await syncSummaries(config.ai, {
+      github,
+      notion,
+      schema,
+      stars,
+      existing,
+      stats,
+      ...aiDeps,
+    });
   return stats;
 }

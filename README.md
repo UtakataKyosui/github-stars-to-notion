@@ -192,11 +192,15 @@ Actionsサマリーの`ai_generated`（保存成功）、`ai_skipped`（変更�
 Node.js 24を用意し、lockfileに固定した依存をインストールします。
 
 ```sh
-npm ci --ignore-scripts
+npm ci --ignore-scripts --include=dev
 npm run check
 npm test
 npm run sync -- --help
 ```
+
+`npm run check`はBiomeによる整形・lint・import順序、TypeScriptの型、fallowによる未使用コード・依存を検査します。CIでも同じコマンドを実行します。個別には`npm run lint`、`npm run check:types`、`npm run check:unused`を使えます。`npm run format`は整形・安全なlint修正・import整理を適用するため、変更差分を確認してください。
+
+Biomeとfallowは開発依存としてバージョンを固定しています。`biome.json`はソース・テスト・設定JSONを対象とし、生成されたlockfileは除外します。`.fallowrc.json`はCLIとテストをエントリーポイントに指定します。fallowは全体の未使用コード検査を失敗条件としており、既存の指摘を隠すベースラインは使用しません。定期・手動同期のWorkflowは同期前に`npm run check:types`を実行します。
 
 CLIは`@crustjs/core` / `@crustjs/extensions` 0.5.6、公式Effectアダプター`@crustjs/effect` 0.2.3、Effect 4.0.6を採用しています。各パッケージのNode.js 24対応と、アダプターのEffect v4 peer dependencyに合わせた構成です。
 

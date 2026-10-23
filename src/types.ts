@@ -68,10 +68,13 @@ export interface NotionPage {
 }
 
 export interface NotionSchema {
-  properties: Record<string, {
-    type: string;
-    multi_select?: { options: { name: string }[] };
-  }>;
+  properties: Record<
+    string,
+    {
+      type: string;
+      multi_select?: { options: { name: string }[] };
+    }
+  >;
 }
 
 export interface RequestOptions {
