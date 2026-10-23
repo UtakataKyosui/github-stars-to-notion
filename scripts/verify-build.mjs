@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -57,6 +57,25 @@ try {
   const missing = spawnSync(process.execPath, [entry], options);
   assert.equal(missing.status, 1);
   assert.match(missing.stdout, /Missing configuration: GITHUB_TOKEN/);
+  await writeFile(join(cwd, '.env'), 'GITHUB_TOKEN=packaged-test-secret');
+  const dotenv = spawnSync(process.execPath, [entry], options);
+  assert.equal(dotenv.status, 1);
+  assert.match(dotenv.stdout, /Missing configuration: NOTION_TOKEN/);
+  assert.doesNotMatch(dotenv.stdout + dotenv.stderr, /packaged-test-secret/);
+  await writeFile(join(cwd, 'custom.env'), 'NOTION_TOKEN=packaged-test-secret');
+  const custom = spawnSync(
+    process.execPath,
+    [entry, '--env-file', 'custom.env'],
+    options,
+  );
+  assert.equal(custom.status, 1);
+  assert.match(custom.stdout, /Missing configuration: GITHUB_TOKEN/);
+  const shell = spawnSync(process.execPath, [entry], {
+    ...options,
+    env: { GITHUB_TOKEN: '' },
+  });
+  assert.equal(shell.status, 1);
+  assert.match(shell.stdout, /Missing configuration: GITHUB_TOKEN/);
   const invalid = spawnSync(
     process.execPath,
     [entry, '--invalid=private-value'],

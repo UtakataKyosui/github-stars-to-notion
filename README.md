@@ -214,10 +214,10 @@ Ctrl+Cで中断すると終了コード130になり、実行中のHTTP通信と�
 
 テストはAPIを模擬し、実際のGitHub/Notion/Cloudflareへ接続しません。基本同期に加え、AI概要の保存と再実行、入力・モデル・プロンプト変更、強制再生成、READMEなし・長大・不正指示、件数制限、AI無効・設定不備、401・429・タイムアウト・保存失敗からの復旧、手入力保持、Secretの非混入を検証します。
 
-実同期は次の環境変数を安全な方法でシェルへ設定してから`npm run sync`を実行します。
+実同期は次の環境変数をシェルまたはプロジェクトルートの`.env`へ設定してから`npm run sync`を実行します。
 `GITHUB_STAR_USER`、`GITHUB_TOKEN`、`NOTION_DATA_SOURCE_ID`、`NOTION_TOKEN`。
 AIを利用する場合は上記の`CLOUDFLARE_ACCOUNT_ID`、`CLOUDFLARE_API_TOKEN`と任意のモデル・件数・force設定も渡します。
-`.env`は自動読み込みしません。トークンをコマンド履歴に残さないでください。
+同期時はカレントディレクトリの`.env`を自動読み込みします。既存のシェル環境変数を優先し、ファイルがなければ従来どおり環境変数だけを使います。別ファイルは`npm run sync -- --env-file PATH`で指定します。明示したファイルがない、または読み込めない場合は同期前に停止します。ヘルプ表示と`init`では読み込みません。Node.js標準の`util.parseEnv()`を使い、`process.env`の書き換えや値のコマンド実行は行いません。トークンをコマンド履歴に残さないでください。
 ローカル実行時は、同じ同期先へのActionsや他プロセスの同期を停止してください。
 
 ### Crustの初期設定・ビルド・スキル
@@ -231,9 +231,9 @@ npm run start -- init
 npm run start -- init --non-interactive --user YOUR_USER --data-source-id YOUR_DATA_SOURCE_ID
 ```
 
-カレントディレクトリの`.stars-to-notion/`へ、`config.json`、`.env.example`、説明を作成します。既存の非空ディレクトリには上書きしません。保存する設定は`GITHUB_STAR_USER`と`NOTION_DATA_SOURCE_ID`の2つだけで、トークンは環境変数から渡します。`.env.example`は参照用で、自動読み込みしません。`.stars-to-notion/`はgitの対象外です。
+カレントディレクトリの`.stars-to-notion/`へ、`config.json`、`.env.example`、説明を作成します。既存の非空ディレクトリには上書きしません。`config.json`へ保存する設定は`GITHUB_STAR_USER`と`NOTION_DATA_SOURCE_ID`の2つだけです。トークンはシェルまたは`.env`から渡します。初期設定後に`.stars-to-notion/.env.example`をプロジェクトルートの`.env`へコピーし、トークンを記入すれば`npm run sync`で利用できます。`.env.example`そのものは読み込みません。`.env`と`.stars-to-notion/`はgitの対象外です。
 
-同期時のユーザー選択は`GITHUB_STAR_USER` → `GITHUB_REPOSITORY_OWNER` → ローカル設定の順、データソースIDは`NOTION_DATA_SOURCE_ID` → ローカル設定の順です。空白のみの値は未設定として扱います。ローカル設定ファイルが壊れている場合は同期前に停止します。設定ディレクトリを含むプロジェクトのルートから実行してください。
+各環境変数はシェル → `.env`（または`--env-file`のファイル）の順で優先します。シェルに空文字を設定した場合もその値を優先します。`--env-file`指定時はそのファイルだけを読み、既定の`.env`とは重ねません。その後、ユーザー選択は`GITHUB_STAR_USER` → `GITHUB_REPOSITORY_OWNER` → ローカル設定の順、データソースIDは`NOTION_DATA_SOURCE_ID` → ローカル設定の順です。ユーザー・データソースIDの空白のみの値は未設定として扱います。ローカル設定ファイルが壊れている場合は同期前に停止します。設定ディレクトリを含むプロジェクトのルートから実行してください。
 
 `@crustjs/env`のContextで環境変数を宣言し、ヘルプにも一覧を表示します。値の検証は既存の設定検証を維持し、秘密情報をエラーへ出しません。`@crustjs/store`で設定を保存し、`@crustjs/create`でテンプレートを展開、`@crustjs/prompts`で入力します。通常の端末では`@crustjs/progress`のスピナーをstderrへ表示します。パイプ・Actionsではスピナーを表示せず、従来の件数レポートを出力します。
 

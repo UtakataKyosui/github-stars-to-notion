@@ -8,6 +8,7 @@ import { help } from '@crustjs/extensions';
 import { spinner } from '@crustjs/progress';
 import { skill } from '@crustjs/skills';
 import { Effect } from 'effect';
+import { withDotEnv } from './environment.ts';
 import { initialize, withLocalSettings } from './settings.ts';
 import { readConfig, SyncError, sync } from './sync.ts';
 import type { Environment, SyncConfig, SyncStats } from './types.ts';
@@ -35,6 +36,7 @@ function syncProgram(
     cwd = process.cwd(),
     interactive = Boolean(process.stderr.isTTY && process.stdin.isTTY),
   }: CliDependencies = {},
+  envFile?: string,
 ) {
   return Effect.gen(function* () {
     let env: Environment = {};
@@ -42,6 +44,7 @@ function syncProgram(
     const failure = yield* Effect.tryPromise({
       try: async (signal) => {
         env = await loadEnv();
+        env = await withDotEnv(env, cwd, envFile);
         const config = readConfig(await withLocalSettings(env, cwd));
         signal.throwIfAborted();
         const task = () => runSync(config, { stats, signal });
@@ -161,6 +164,12 @@ export function createCli(
     .provide(environment())
     .extend(help())
     .extend(skill({ autoUpdate: false, defaultScope: 'project' }))
+    .flags({
+      name: 'env-file',
+      type: 'string',
+      description:
+        'Load a dotenv file (default: .env; environment variables take priority)',
+    })
     .add(
       defineCommand(
         'init',
@@ -191,21 +200,25 @@ export function createCli(
                 dependencies.templateDir,
               );
               stdout(
-                'Created .stars-to-notion/.env.example and config.json. Supply GITHUB_TOKEN and NOTION_TOKEN through your environment.',
+                'Created .stars-to-notion/.env.example and config.json. Copy the example to .env and fill in GITHUB_TOKEN and NOTION_TOKEN, or supply them through your shell.',
               );
             }),
       ),
     )
     .action(
-      handler(function* ({ rawArgs, ctx, stdout }) {
+      handler(function* ({ rawArgs, ctx, stdout, flags }) {
         if (rawArgs.length)
           return yield* Effect.fail(
             new Error('Unexpected positional arguments'),
           );
-        syncCode = yield* syncProgram(() => ctx.environment, {
-          ...dependencies,
-          write: dependencies.write ?? stdout,
-        });
+        syncCode = yield* syncProgram(
+          () => ctx.environment,
+          {
+            ...dependencies,
+            write: dependencies.write ?? stdout,
+          },
+          flags['env-file'],
+        );
         return syncCode;
       }),
     );
