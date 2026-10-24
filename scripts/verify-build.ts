@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +15,11 @@ try {
   const help = execFileSync(process.execPath, [entry, '--help'], options);
   assert.match(help, /Environment:/);
   assert.match(help, /Agent skills:/);
+  // npm exposes bin entries as symlinks on Unix.
+  const link = join(cwd, 'github-stars-to-notion');
+  await symlink(entry, link);
+  const linkedHelp = execFileSync(process.execPath, [link, '--help'], options);
+  assert.match(linkedHelp, /Environment:/);
   const id = 'a'.repeat(32);
   execFileSync(
     process.execPath,
