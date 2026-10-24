@@ -1,0 +1,7 @@
+# Copy to .env in the directory where you run the CLI, or pass --env-file PATH.
+# Existing shell environment variables take priority.
+GITHUB_STAR_USER={{user}}
+NOTION_DATA_SOURCE_ID={{dataSourceId}}
+# Supply tokens through your shell/secret manager, or fill in this private file.
+GITHUB_TOKEN=
+NOTION_TOKEN=
